@@ -26,7 +26,7 @@ Install these on your machine:
 1. **Git**
 2. **Docker Desktop** (or Docker Engine with Compose support)
 3. **.NET SDK 10.x** (the backend is currently pinned and targeted to `.NET 10` / `net10.0`)
-4. **PowerShell 7+** (recommended for the provided automation script)
+4. **Python 3.10+** (required for the root developer CLI: `scripts/dev.py`)
 
 Optional but useful:
 
@@ -79,8 +79,8 @@ Or run the VS Code task:
 From the repository root:
 
 ```powershell
-pwsh ./scripts/dev.ps1 bootstrap
-pwsh ./scripts/dev.ps1 up
+python ./scripts/dev.py bootstrap
+python ./scripts/dev.py up
 ```
 
 What this does:
@@ -88,7 +88,11 @@ What this does:
 - `bootstrap`: initializes git submodules (if needed) and restores the backend solution
 - `up`: starts local PostgreSQL (or reuses an existing `board_tpl_postgres` container) and runs the backend API
 - together, these commands provide a reliable first-time setup + startup flow
-- for convenience, `pwsh ./scripts/dev.ps1 up -Bootstrap` is still supported
+- for convenience, `python ./scripts/dev.py up --bootstrap` is supported
+
+For full command coverage (including DB backup/restore helpers), see:
+
+- [`docs/developer-cli.md`](../../docs/developer-cli.md)
 
 When the API is running, verify:
 
@@ -99,46 +103,18 @@ curl http://localhost:5085/health/ready
 
 ## Common Commands
 
-Run environment checks:
+The root developer CLI command catalog (bootstrap/up/down/status/test/doctor and DB backup/restore helpers) is documented in:
+
+- [`docs/developer-cli.md`](../../docs/developer-cli.md)
+
+Common backend examples:
 
 ```powershell
-pwsh ./scripts/dev.ps1 doctor
-```
-
-Run one-time project bootstrap (submodules + restore):
-
-```powershell
-pwsh ./scripts/dev.ps1 bootstrap
-```
-
-Start only dependencies (Postgres) without launching the API:
-
-```powershell
-pwsh ./scripts/dev.ps1 up -DependenciesOnly
-```
-
-Stop dependencies:
-
-```powershell
-pwsh ./scripts/dev.ps1 down
-```
-
-Show dependency status:
-
-```powershell
-pwsh ./scripts/dev.ps1 status
-```
-
-Run backend tests (unit + integration):
-
-```powershell
-pwsh ./scripts/dev.ps1 test
-```
-
-Run only unit tests:
-
-```powershell
-pwsh ./scripts/dev.ps1 test -SkipIntegration
+python ./scripts/dev.py doctor
+python ./scripts/dev.py up --dependencies-only
+python ./scripts/dev.py status
+python ./scripts/dev.py test
+python ./scripts/dev.py test --skip-integration
 ```
 
 Run versioned Postman API tests via Newman (optional, requires Node.js / `npx`):
@@ -204,7 +180,7 @@ docker logs board_tpl_postgres
 Run:
 
 ```powershell
-pwsh ./scripts/dev.ps1 doctor
+python ./scripts/dev.py doctor
 ```
 
 Then install the missing prerequisite and rerun the quick-start command.
@@ -218,7 +194,7 @@ If you still want to reset it completely:
 ```powershell
 docker stop board_tpl_postgres
 docker rm board_tpl_postgres
-pwsh ./scripts/dev.ps1 up
+python ./scripts/dev.py up
 ```
 
 ### VS Code warns about HTTPS development certificate

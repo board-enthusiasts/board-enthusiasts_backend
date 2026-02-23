@@ -53,7 +53,8 @@ Separation rule applied:
 ## How to use in Postman
 
 1. Start the backend locally:
-   - from repo root: `pwsh ./scripts/dev.ps1 up`
+   - from repo root: `python ./scripts/dev.py up`
+   - see CLI docs for alternatives/options: [`docs/developer-cli.md`](../../docs/developer-cli.md)
 2. Open Postman.
 3. Import the collection file.
 4. Import the local environment file.

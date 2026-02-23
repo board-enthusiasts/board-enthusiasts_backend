@@ -15,16 +15,20 @@ Prereq: local PostgreSQL running (see [`backend/docker-compose.yml`](docker-comp
 Recommended (repo root, automated):
 
 ```bash
-pwsh ./scripts/dev.ps1 bootstrap
-pwsh ./scripts/dev.ps1 up
+python ./scripts/dev.py bootstrap
+python ./scripts/dev.py up
 ```
 
 Backend-only test commands (repo root, automated):
 
 ```bash
-pwsh ./scripts/dev.ps1 test
-pwsh ./scripts/dev.ps1 test -SkipIntegration
+python ./scripts/dev.py test
+python ./scripts/dev.py test --skip-integration
 ```
+
+See the root developer CLI doc for full command help and DB backup/restore helpers:
+
+- [`docs/developer-cli.md`](../docs/developer-cli.md)
 
 Run the API:
 

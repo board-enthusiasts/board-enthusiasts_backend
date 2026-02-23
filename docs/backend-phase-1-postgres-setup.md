@@ -118,7 +118,8 @@ If you want me to perform more setup directly with fewer manual steps, these int
    - Run: `git submodule update --init --recursive`
    - Verify: `git submodule status` should show entries without a leading `-`.
 2. **Store setup scripts in-repo** (e.g., `scripts/dev-up.sh`) so I can edit and improve them incrementally.
-   - Current repo example: [`scripts/dev.ps1`](../../scripts/dev.ps1)
+   - Current repo example: [`scripts/dev.py`](../../scripts/dev.py)
+   - Supplemental usage docs: [`docs/developer-cli.md`](../../docs/developer-cli.md)
 3. **Use `.env.example` files** for each service; I can maintain these while you keep real `.env` private.
 4. **Use CI (GitHub Actions)** for checks; I can adapt code/scripts to pass the same checks locally and in CI.
 5. **Provide a single command workflow** (e.g., `make dev-up`, `make test`) so I can run/validate quickly each step.
