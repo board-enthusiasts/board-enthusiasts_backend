@@ -18,9 +18,10 @@ internal static partial class OrganizationEndpoints
     /// <returns>The route builder.</returns>
     public static IEndpointRouteBuilder MapOrganizationEndpoints(this IEndpointRouteBuilder app)
     {
-        var group = app.MapGroup("/organizations");
+        var publicGroup = app.MapGroup("/organizations");
+        var managementGroup = app.MapGroup("/developer/organizations");
 
-        group.MapGet("/", async (
+        publicGroup.MapGet("/", async (
             IOrganizationService organizationService,
             CancellationToken cancellationToken) =>
         {
@@ -28,7 +29,7 @@ internal static partial class OrganizationEndpoints
             return Results.Ok(new OrganizationListResponse(organizations.Select(MapOrganization).ToArray()));
         });
 
-        group.MapGet("/{slug}", async (
+        publicGroup.MapGet("/{slug}", async (
             string slug,
             IOrganizationService organizationService,
             CancellationToken cancellationToken) =>
@@ -39,7 +40,7 @@ internal static partial class OrganizationEndpoints
                 : Results.Ok(new OrganizationResponse(MapOrganization(organization)));
         });
 
-        group.MapPost("/", [Authorize] async (
+        publicGroup.MapPost("/", [Authorize] async (
             ClaimsPrincipal user,
             CreateOrganizationRequest request,
             IOrganizationService organizationService,
@@ -79,7 +80,7 @@ internal static partial class OrganizationEndpoints
             };
         });
 
-        group.MapPut("/{organizationId:guid}", [Authorize] async (
+        managementGroup.MapPut("/{organizationId:guid}", [Authorize] async (
             ClaimsPrincipal user,
             Guid organizationId,
             UpdateOrganizationRequest request,
@@ -116,7 +117,7 @@ internal static partial class OrganizationEndpoints
             };
         });
 
-        group.MapDelete("/{organizationId:guid}", [Authorize] async (
+        managementGroup.MapDelete("/{organizationId:guid}", [Authorize] async (
             ClaimsPrincipal user,
             Guid organizationId,
             IOrganizationService organizationService,
@@ -132,7 +133,7 @@ internal static partial class OrganizationEndpoints
             };
         });
 
-        group.MapGet("/{organizationId:guid}/memberships", [Authorize] async (
+        managementGroup.MapGet("/{organizationId:guid}/memberships", [Authorize] async (
             ClaimsPrincipal user,
             Guid organizationId,
             IOrganizationService organizationService,
@@ -148,7 +149,7 @@ internal static partial class OrganizationEndpoints
             };
         });
 
-        group.MapPut("/{organizationId:guid}/memberships/{memberKeycloakSubject}", [Authorize] async (
+        managementGroup.MapPut("/{organizationId:guid}/memberships/{memberKeycloakSubject}", [Authorize] async (
             ClaimsPrincipal user,
             Guid organizationId,
             string memberKeycloakSubject,
@@ -187,7 +188,7 @@ internal static partial class OrganizationEndpoints
             };
         });
 
-        group.MapDelete("/{organizationId:guid}/memberships/{memberKeycloakSubject}", [Authorize] async (
+        managementGroup.MapDelete("/{organizationId:guid}/memberships/{memberKeycloakSubject}", [Authorize] async (
             ClaimsPrincipal user,
             Guid organizationId,
             string memberKeycloakSubject,

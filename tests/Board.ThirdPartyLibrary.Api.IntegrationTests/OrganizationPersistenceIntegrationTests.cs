@@ -98,7 +98,7 @@ public sealed class OrganizationPersistenceIntegrationTests : IAsyncLifetime
         }
 
         using var membershipResponse = await client.PutAsJsonAsync(
-            $"/organizations/{organizationId}/memberships/editor-456",
+            $"/developer/organizations/{organizationId}/memberships/editor-456",
             new
             {
                 role = "editor"
@@ -116,7 +116,7 @@ public sealed class OrganizationPersistenceIntegrationTests : IAsyncLifetime
             "Stellar Forge",
             publicGetDocument.RootElement.GetProperty("organization").GetProperty("displayName").GetString());
 
-        using var membershipsGetResponse = await client.GetAsync($"/organizations/{organizationId}/memberships");
+        using var membershipsGetResponse = await client.GetAsync($"/developer/organizations/{organizationId}/memberships");
         var membershipsPayload = await membershipsGetResponse.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, membershipsGetResponse.StatusCode);
@@ -124,7 +124,7 @@ public sealed class OrganizationPersistenceIntegrationTests : IAsyncLifetime
         using var membershipsDocument = JsonDocument.Parse(membershipsPayload);
         Assert.Equal(2, membershipsDocument.RootElement.GetProperty("memberships").GetArrayLength());
 
-        using var deleteResponse = await client.DeleteAsync($"/organizations/{organizationId}");
+        using var deleteResponse = await client.DeleteAsync($"/developer/organizations/{organizationId}");
         Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
 
         await using var verificationContext = CreateDbContext();
