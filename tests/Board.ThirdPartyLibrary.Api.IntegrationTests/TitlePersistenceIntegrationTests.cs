@@ -162,6 +162,8 @@ public sealed class TitlePersistenceIntegrationTests : IAsyncLifetime
 
         using var publicListDocument = JsonDocument.Parse(publicListPayload);
         Assert.Single(publicListDocument.RootElement.GetProperty("titles").EnumerateArray());
+        Assert.Equal(1, publicListDocument.RootElement.GetProperty("paging").GetProperty("totalCount").GetInt32());
+        Assert.Equal(1, publicListDocument.RootElement.GetProperty("paging").GetProperty("totalPages").GetInt32());
 
         using var publicDetailResponse = await client.GetAsync("/catalog/stellar-forge/star-blasters");
         var publicDetailPayload = await publicDetailResponse.Content.ReadAsStringAsync();

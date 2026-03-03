@@ -17,7 +17,7 @@ This is the **first small backend step**: get PostgreSQL running locally and ver
 ## What you will learn in this phase
 
 - What PostgreSQL is responsible for in this project.
-- How to run a local Postgres instance with Docker.
+- How to run a local Postgres instance with Docker and local TLS.
 - How to verify that a database and user are working.
 - Which actions are manual vs. which I can automate for you.
 
@@ -51,7 +51,8 @@ If you need to recreate it manually, use this content:
 ```yaml
 services:
   postgres:
-    image: postgres:16
+    build:
+      context: ./postgres
     container_name: board_tpl_postgres
     restart: unless-stopped
     environment:
@@ -62,10 +63,20 @@ services:
       - "5432:5432"
     volumes:
       - board_tpl_pg_data:/var/lib/postgresql/data
+      - ./postgres/certs/server.crt:/certs/server.crt:ro
+      - ./postgres/certs/server.key:/certs/server.key:ro
 
 volumes:
   board_tpl_pg_data:
 ```
+
+Before first start, generate/export the local localhost certificate material for PostgreSQL. The supported path in this repository is the root CLI:
+
+```bash
+python ./scripts/dev.py web
+```
+
+That command exports the certificate material under `backend/postgres/certs/` automatically before starting dependencies.
 
 Then run (from the repository root):
 

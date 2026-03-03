@@ -13,7 +13,7 @@ internal sealed class KeycloakOptions
     /// <summary>
     /// Gets or sets the Keycloak server base URL.
     /// </summary>
-    public string BaseUrl { get; set; } = "http://localhost:8080";
+    public string BaseUrl { get; set; } = "https://localhost:8443";
 
     /// <summary>
     /// Gets or sets the Keycloak realm name.
@@ -33,12 +33,12 @@ internal sealed class KeycloakOptions
     /// <summary>
     /// Gets or sets the public backend base URL used for redirect URI generation.
     /// </summary>
-    public string PublicBackendBaseUrl { get; set; } = "http://localhost:5085";
+    public string PublicBackendBaseUrl { get; set; } = "https://localhost:7085";
 
     /// <summary>
     /// Gets or sets a value indicating whether OpenID metadata must use HTTPS.
     /// </summary>
-    public bool RequireHttpsMetadata { get; set; } = false;
+    public bool RequireHttpsMetadata { get; set; } = true;
 
     /// <summary>
     /// Gets or sets the scopes requested during login.

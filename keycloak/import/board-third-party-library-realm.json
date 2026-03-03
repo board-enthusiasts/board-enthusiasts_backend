@@ -37,16 +37,36 @@
       "publicClient": false,
       "secret": "board-third-party-library-backend-secret",
       "redirectUris": [
-        "http://localhost:5085/identity/auth/callback"
+        "https://localhost:7085/identity/auth/callback"
       ],
       "webOrigins": [
-        "http://localhost:5085"
+        "https://localhost:7085"
       ],
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
       "attributes": {
         "pkce.code.challenge.method": "S256",
-        "post.logout.redirect.uris": "+"
+        "post.logout.redirect.uris": "https://localhost:7085/*"
+      }
+    },
+    {
+      "clientId": "board-third-party-library-web",
+      "name": "Board Third Party Library Web UI",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "board-third-party-library-web-secret",
+      "redirectUris": [
+        "https://localhost:7277/signin-oidc"
+      ],
+      "webOrigins": [
+        "https://localhost:7277"
+      ],
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "https://localhost:7277/signout-callback-oidc"
       }
     }
   ],

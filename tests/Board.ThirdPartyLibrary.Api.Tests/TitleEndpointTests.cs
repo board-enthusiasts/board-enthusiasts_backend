@@ -128,6 +128,8 @@ public sealed class TitleEndpointTests
 
         Assert.Single(titles);
         Assert.Equal("star-blasters", titles[0].GetProperty("slug").GetString());
+        Assert.Equal(1, document.RootElement.GetProperty("paging").GetProperty("totalCount").GetInt32());
+        Assert.Equal(1, document.RootElement.GetProperty("paging").GetProperty("pageNumber").GetInt32());
     }
 
     /// <summary>
@@ -375,6 +377,76 @@ public sealed class TitleEndpointTests
         var titles = document.RootElement.GetProperty("titles").EnumerateArray().ToList();
         Assert.Single(titles);
         Assert.Equal("star-blasters", titles[0].GetProperty("slug").GetString());
+        Assert.Equal(1, document.RootElement.GetProperty("paging").GetProperty("totalCount").GetInt32());
+    }
+
+    /// <summary>
+    /// Verifies public catalog browsing supports genre filtering plus deterministic paging metadata.
+    /// </summary>
+    [Fact]
+    public async Task ListCatalogTitlesEndpoint_WithGenreFilterAndPaging_ReturnsRequestedSlice()
+    {
+        var organizationId = Guid.NewGuid();
+
+        using var factory = new TestApiFactory();
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var dbContext = scope.ServiceProvider.GetRequiredService<BoardLibraryDbContext>();
+            dbContext.Organizations.Add(new Organization
+            {
+                Id = organizationId,
+                Slug = "stellar-forge",
+                DisplayName = "Stellar Forge",
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+
+            await SeedPublicCatalogTitleAsync(dbContext, organizationId, "alpha-blasters", "Alpha Blasters", "Arcade Shooter");
+            await SeedPublicCatalogTitleAsync(dbContext, organizationId, "star-blasters", "Star Blasters", "Arcade Shooter");
+            await SeedPublicCatalogTitleAsync(dbContext, organizationId, "puzzle-grove", "Puzzle Grove", "Puzzle");
+        }
+
+        using var client = factory.CreateClient();
+        using var response = await client.GetAsync("/catalog?genre=Arcade%20Shooter&sort=genre&pageNumber=2&pageSize=1");
+        var payload = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(payload);
+        var titles = document.RootElement.GetProperty("titles").EnumerateArray().ToList();
+        var paging = document.RootElement.GetProperty("paging");
+
+        Assert.Single(titles);
+        Assert.Equal("star-blasters", titles[0].GetProperty("slug").GetString());
+        Assert.Equal(2, paging.GetProperty("totalCount").GetInt32());
+        Assert.Equal(2, paging.GetProperty("pageNumber").GetInt32());
+        Assert.Equal(1, paging.GetProperty("pageSize").GetInt32());
+        Assert.Equal(2, paging.GetProperty("totalPages").GetInt32());
+        Assert.True(paging.GetProperty("hasPreviousPage").GetBoolean());
+        Assert.False(paging.GetProperty("hasNextPage").GetBoolean());
+    }
+
+    /// <summary>
+    /// Verifies invalid catalog browse query values are rejected with validation errors.
+    /// </summary>
+    [Fact]
+    public async Task ListCatalogTitlesEndpoint_WithInvalidQueryValues_ReturnsUnprocessableEntity()
+    {
+        using var factory = new TestApiFactory();
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/catalog?sort=invalid&pageNumber=0&pageSize=99");
+        var payload = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, response.StatusCode);
+
+        using var document = JsonDocument.Parse(payload);
+        var errors = document.RootElement.GetProperty("errors");
+
+        Assert.True(errors.TryGetProperty("sort", out _));
+        Assert.True(errors.TryGetProperty("pageNumber", out _));
+        Assert.True(errors.TryGetProperty("pageSize", out _));
     }
 
     /// <summary>
@@ -1864,6 +1936,51 @@ public sealed class TitleEndpointTests
             content: null);
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    private static async Task SeedPublicCatalogTitleAsync(
+        BoardLibraryDbContext dbContext,
+        Guid organizationId,
+        string slug,
+        string displayName,
+        string genreDisplay)
+    {
+        var titleId = Guid.NewGuid();
+        var metadataId = Guid.NewGuid();
+        var now = DateTime.UtcNow;
+
+        dbContext.Titles.Add(new Title
+        {
+            Id = titleId,
+            OrganizationId = organizationId,
+            Slug = slug,
+            ContentKind = "game",
+            LifecycleStatus = "testing",
+            Visibility = "listed",
+            CurrentMetadataVersionId = metadataId,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        });
+        dbContext.TitleMetadataVersions.Add(new TitleMetadataVersion
+        {
+            Id = metadataId,
+            TitleId = titleId,
+            RevisionNumber = 1,
+            DisplayName = displayName,
+            ShortDescription = $"{displayName} short description.",
+            Description = $"{displayName} description.",
+            GenreDisplay = genreDisplay,
+            MinPlayers = 1,
+            MaxPlayers = 4,
+            AgeRatingAuthority = "ESRB",
+            AgeRatingValue = "E10+",
+            MinAgeYears = 10,
+            IsFrozen = true,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        });
+
+        await dbContext.SaveChangesAsync();
     }
 
     private sealed class TestApiFactory : WebApplicationFactory<Program>
