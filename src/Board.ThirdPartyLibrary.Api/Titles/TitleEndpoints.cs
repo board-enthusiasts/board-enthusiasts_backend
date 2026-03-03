@@ -10,6 +10,8 @@ namespace Board.ThirdPartyLibrary.Api.Titles;
 internal static partial class TitleEndpoints
 {
     private static readonly Regex SlugRegex = SlugPattern();
+    private const int DefaultCatalogPageSize = 12;
+    private const int MaxCatalogPageSize = 48;
 
     /// <summary>
     /// Maps title and catalog endpoints to the application.
@@ -25,15 +27,33 @@ internal static partial class TitleEndpoints
         catalogGroup.MapGet("/", async (
             string? organizationSlug,
             string? contentKind,
+            string? genre,
+            string? sort,
+            int? pageNumber,
+            int? pageSize,
             ITitleService titleService,
             CancellationToken cancellationToken) =>
         {
-            var titles = await titleService.ListPublicTitlesAsync(
-                organizationSlug?.Trim().ToLowerInvariant(),
-                NormalizeCode(contentKind),
+            var validationErrors = ValidateCatalogBrowseRequest(contentKind, sort, pageNumber, pageSize);
+            if (validationErrors.Count > 0)
+            {
+                return Results.ValidationProblem(validationErrors, statusCode: StatusCodes.Status422UnprocessableEntity);
+            }
+
+            var result = await titleService.ListPublicTitlesAsync(
+                new PublicCatalogListQuery(
+                    organizationSlug?.Trim().ToLowerInvariant(),
+                    NormalizeCode(contentKind),
+                    genre?.Trim(),
+                    NormalizeCode(sort) ?? CatalogSortModes.Title,
+                    pageNumber ?? 1,
+                    pageSize ?? DefaultCatalogPageSize),
                 cancellationToken);
 
-            return Results.Ok(new CatalogTitleListResponse(titles.Select(MapTitleSummary).ToArray()));
+            return Results.Ok(
+                new CatalogTitleListResponse(
+                    result.Titles.Select(MapTitleSummary).ToArray(),
+                    MapCatalogPage(result.Paging)));
         });
 
         catalogGroup.MapGet("/{organizationSlug}/{titleSlug}", async (
@@ -242,6 +262,41 @@ internal static partial class TitleEndpoints
     private static Dictionary<string, string[]> ValidateUpdateTitleRequest(UpdateTitleRequest request) =>
         ValidateTitleRequest(request);
 
+    private static Dictionary<string, string[]> ValidateCatalogBrowseRequest(
+        string? contentKind,
+        string? sort,
+        int? pageNumber,
+        int? pageSize)
+    {
+        var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
+
+        var normalizedContentKind = NormalizeCode(contentKind);
+        if (normalizedContentKind is not null &&
+            normalizedContentKind is not (TitleContentKinds.Game or TitleContentKinds.App))
+        {
+            errors["contentKind"] = ["Content kind must be one of: game, app."];
+        }
+
+        var normalizedSort = NormalizeCode(sort);
+        if (normalizedSort is not null &&
+            normalizedSort is not (CatalogSortModes.Title or CatalogSortModes.Genre))
+        {
+            errors["sort"] = ["Sort must be one of: title, genre."];
+        }
+
+        if (pageNumber is <= 0)
+        {
+            errors["pageNumber"] = ["Page number must be at least 1."];
+        }
+
+        if (pageSize is <= 0 or > MaxCatalogPageSize)
+        {
+            errors["pageSize"] = [$"Page size must be between 1 and {MaxCatalogPageSize}."];
+        }
+
+        return errors;
+    }
+
     private static Dictionary<string, string[]> ValidateTitleRequest(ITitleRequest request)
     {
         var errors = new Dictionary<string, string[]>(StringComparer.Ordinal);
@@ -385,6 +440,15 @@ internal static partial class TitleEndpoints
             MapPublicTitleAcquisition(title.Acquisition),
             title.CreatedAtUtc,
             title.UpdatedAtUtc);
+
+    private static CatalogPageDto MapCatalogPage(CatalogPageSnapshot page) =>
+        new(
+            page.PageNumber,
+            page.PageSize,
+            page.TotalCount,
+            page.TotalPages,
+            page.HasPreviousPage,
+            page.HasNextPage);
 
     private static DeveloperTitleDto MapDeveloperTitleDetail(TitleSnapshot title) =>
         new(
@@ -738,7 +802,25 @@ internal sealed record PublicTitleAcquisitionDto(
 /// Response wrapper for public catalog title lists.
 /// </summary>
 /// <param name="Titles">Catalog titles visible to the caller.</param>
-internal sealed record CatalogTitleListResponse(IReadOnlyList<CatalogTitleSummaryDto> Titles);
+/// <param name="Paging">Paging metadata for the matched result set.</param>
+internal sealed record CatalogTitleListResponse(IReadOnlyList<CatalogTitleSummaryDto> Titles, CatalogPageDto Paging);
+
+/// <summary>
+/// Paging metadata for public catalog browse responses.
+/// </summary>
+/// <param name="PageNumber">1-based page number.</param>
+/// <param name="PageSize">Requested page size.</param>
+/// <param name="TotalCount">Total matched titles across all pages.</param>
+/// <param name="TotalPages">Total available pages for the current page size.</param>
+/// <param name="HasPreviousPage">Whether a previous page exists.</param>
+/// <param name="HasNextPage">Whether a next page exists.</param>
+internal sealed record CatalogPageDto(
+    int PageNumber,
+    int PageSize,
+    int TotalCount,
+    int TotalPages,
+    bool HasPreviousPage,
+    bool HasNextPage);
 
 /// <summary>
 /// Response wrapper for a public catalog title.

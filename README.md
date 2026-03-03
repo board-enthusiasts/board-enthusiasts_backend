@@ -46,16 +46,16 @@ dotnet run --project src/Board.ThirdPartyLibrary.Api
 Verify endpoints:
 
 ```bash
-curl http://localhost:5085/health/live
-curl http://localhost:5085/health/ready
-curl http://localhost:5085/identity/auth/config
-curl http://localhost:5085/organizations
-curl http://localhost:5085/catalog
+Invoke-WebRequest -SkipCertificateCheck -HttpVersion 2.0 https://localhost:7085/health/live
+Invoke-WebRequest -SkipCertificateCheck -HttpVersion 2.0 https://localhost:7085/health/ready
+Invoke-WebRequest -SkipCertificateCheck -HttpVersion 2.0 https://localhost:7085/identity/auth/config
+Invoke-WebRequest -SkipCertificateCheck -HttpVersion 2.0 https://localhost:7085/organizations
+Invoke-WebRequest -SkipCertificateCheck -HttpVersion 2.0 https://localhost:7085/catalog
 ```
 
 Notes:
 
-- `appsettings.Development.json` is preconfigured for the local Postgres container and local Keycloak realm import.
+- `appsettings.Development.json` is preconfigured for the local Postgres container with TLS enabled and the local Keycloak realm import.
 - Override with env var `ConnectionStrings__BoardLibrary` if needed.
 - Override Keycloak settings with `Authentication__Keycloak__*` environment variables if needed.
 - Authentication data ownership is documented in [`backend/docs/auth-data-ownership.md`](docs/auth-data-ownership.md).
@@ -63,20 +63,20 @@ Notes:
 
 Local Keycloak bootstrap defaults:
 
-- Keycloak admin console: `http://localhost:8080/admin/`
+- Keycloak admin console: [`https://localhost:8443/admin/`](https://localhost:8443/admin/)
 - Keycloak bootstrap admin: `admin` / `admin`
 - Seeded realm user for login testing: `local-admin` / `ChangeMe!123`
 
 To verify the browser login flow locally, open:
 
 ```bash
-http://localhost:5085/identity/auth/login
+https://localhost:7085/identity/auth/login
 ```
 
 Keycloak will host the login/registration UI and redirect back to:
 
 ```bash
-http://localhost:5085/identity/auth/callback
+https://localhost:7085/identity/auth/callback
 ```
 
 ## Planning

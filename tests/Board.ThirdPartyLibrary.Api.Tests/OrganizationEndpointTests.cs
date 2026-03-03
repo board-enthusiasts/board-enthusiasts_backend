@@ -75,6 +75,77 @@ public sealed class OrganizationEndpointTests
     }
 
     /// <summary>
+    /// Verifies authenticated developers can list only organizations they manage.
+    /// </summary>
+    [Fact]
+    public async Task ListManagedOrganizationsEndpoint_ReturnsCallerOrganizations()
+    {
+        var managedOrganizationId = Guid.NewGuid();
+        var unmanagedOrganizationId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+
+        using var factory = new TestApiFactory(
+            useTestAuthentication: true,
+            testClaims:
+            [
+                new Claim("sub", "editor-123"),
+                new Claim("name", "Editor User")
+            ]);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var dbContext = scope.ServiceProvider.GetRequiredService<BoardLibraryDbContext>();
+            dbContext.Users.Add(new AppUser
+            {
+                Id = userId,
+                KeycloakSubject = "editor-123",
+                DisplayName = "Editor User",
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            dbContext.Organizations.AddRange(
+                new Organization
+                {
+                    Id = managedOrganizationId,
+                    Slug = "stellar-forge",
+                    DisplayName = "Stellar Forge",
+                    CreatedAtUtc = DateTime.UtcNow,
+                    UpdatedAtUtc = DateTime.UtcNow
+                },
+                new Organization
+                {
+                    Id = unmanagedOrganizationId,
+                    Slug = "tabletop-sparks",
+                    DisplayName = "Tabletop Sparks",
+                    CreatedAtUtc = DateTime.UtcNow,
+                    UpdatedAtUtc = DateTime.UtcNow
+                });
+            dbContext.OrganizationMemberships.Add(new OrganizationMembership
+            {
+                OrganizationId = managedOrganizationId,
+                UserId = userId,
+                Role = "editor",
+                CreatedAtUtc = DateTime.UtcNow,
+                UpdatedAtUtc = DateTime.UtcNow
+            });
+            await dbContext.SaveChangesAsync();
+        }
+
+        using var client = factory.CreateClient();
+        using var response = await client.GetAsync("/developer/organizations");
+        var payload = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(payload);
+        var organizations = document.RootElement.GetProperty("organizations").EnumerateArray().ToList();
+
+        Assert.Single(organizations);
+        Assert.Equal(managedOrganizationId.ToString(), organizations[0].GetProperty("id").GetString());
+        Assert.Equal("editor", organizations[0].GetProperty("role").GetString());
+    }
+
+    /// <summary>
     /// Verifies public organization details are resolved by slug.
     /// </summary>
     [Fact]

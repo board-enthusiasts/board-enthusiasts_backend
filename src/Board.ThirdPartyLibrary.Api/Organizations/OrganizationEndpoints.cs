@@ -40,6 +40,15 @@ internal static partial class OrganizationEndpoints
                 : Results.Ok(new OrganizationResponse(MapOrganization(organization)));
         });
 
+        managementGroup.MapGet("/", [Authorize] async (
+            ClaimsPrincipal user,
+            IOrganizationService organizationService,
+            CancellationToken cancellationToken) =>
+        {
+            var organizations = await organizationService.ListManagedOrganizationsAsync(user.Claims, cancellationToken);
+            return Results.Ok(new DeveloperOrganizationListResponse(organizations.Select(MapDeveloperOrganization).ToArray()));
+        });
+
         publicGroup.MapPost("/", [Authorize] async (
             ClaimsPrincipal user,
             CreateOrganizationRequest request,
@@ -238,6 +247,15 @@ internal static partial class OrganizationEndpoints
             organization.CreatedAtUtc,
             organization.UpdatedAtUtc);
 
+    private static DeveloperOrganizationDto MapDeveloperOrganization(DeveloperOrganizationSummarySnapshot organization) =>
+        new(
+            organization.Id,
+            organization.Slug,
+            organization.DisplayName,
+            organization.Description,
+            organization.LogoUrl,
+            organization.Role);
+
     private static OrganizationMembershipDto MapMembership(OrganizationMembershipSnapshot membership) =>
         new(
             membership.OrganizationId,
@@ -380,6 +398,29 @@ internal sealed record OrganizationDto(
 /// </summary>
 /// <param name="Organizations">Organizations visible to the caller.</param>
 internal sealed record OrganizationListResponse(IReadOnlyList<OrganizationDto> Organizations);
+
+/// <summary>
+/// Developer-visible organization summary DTO.
+/// </summary>
+/// <param name="Id">Organization identifier.</param>
+/// <param name="Slug">Human-readable unique route key.</param>
+/// <param name="DisplayName">Public display name.</param>
+/// <param name="Description">Optional public description.</param>
+/// <param name="LogoUrl">Optional public logo URL.</param>
+/// <param name="Role">Caller membership role within the organization.</param>
+internal sealed record DeveloperOrganizationDto(
+    Guid Id,
+    string Slug,
+    string DisplayName,
+    string? Description,
+    string? LogoUrl,
+    string Role);
+
+/// <summary>
+/// Response wrapper for developer-visible organization lists.
+/// </summary>
+/// <param name="Organizations">Organizations the caller can manage.</param>
+internal sealed record DeveloperOrganizationListResponse(IReadOnlyList<DeveloperOrganizationDto> Organizations);
 
 /// <summary>
 /// Response wrapper for an organization.

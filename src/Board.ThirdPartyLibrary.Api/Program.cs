@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Net;
 using System.Text.Json.Serialization;
 using Board.ThirdPartyLibrary.Api.Acquisition;
 using Board.ThirdPartyLibrary.Api.Auth;
@@ -10,11 +11,20 @@ using Board.ThirdPartyLibrary.Api.Titles;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.ConfigureEndpointDefaults(endpointOptions =>
+    {
+        endpointOptions.Protocols = HttpProtocols.Http1AndHttp2;
+    });
+});
 
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
@@ -29,7 +39,11 @@ builder.Services.AddMemoryCache();
 builder.Services.AddSingleton<IKeycloakEndpointResolver, KeycloakEndpointResolver>();
 builder.Services.AddSingleton<IKeycloakAuthorizationStateStore, InMemoryKeycloakAuthorizationStateStore>();
 builder.Services.AddTransient<IClaimsTransformation, KeycloakRoleClaimsTransformation>();
-builder.Services.AddHttpClient<IKeycloakTokenClient, KeycloakTokenClient>();
+builder.Services.AddHttpClient<IKeycloakTokenClient, KeycloakTokenClient>(client =>
+{
+    client.DefaultRequestVersion = HttpVersion.Version20;
+    client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrHigher;
+});
 
 var keycloakOptions = builder.Configuration.GetSection(KeycloakOptions.SectionName).Get<KeycloakOptions>() ?? new KeycloakOptions();
 var authority = $"{keycloakOptions.BaseUrl.TrimEnd('/')}/realms/{Uri.EscapeDataString(keycloakOptions.Realm)}";

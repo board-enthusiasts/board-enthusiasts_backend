@@ -15,13 +15,11 @@ internal interface ITitleService
     /// <summary>
     /// Lists public catalog titles that are currently discoverable.
     /// </summary>
-    /// <param name="organizationSlug">Optional organization route key filter.</param>
-    /// <param name="contentKind">Optional content kind filter.</param>
+    /// <param name="query">Catalog browse query and paging options.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>Catalog title summaries visible to the caller.</returns>
-    Task<IReadOnlyList<TitleSnapshot>> ListPublicTitlesAsync(
-        string? organizationSlug,
-        string? contentKind,
+    /// <returns>Paged catalog title summaries visible to the caller.</returns>
+    Task<PublicCatalogListResult> ListPublicTitlesAsync(
+        PublicCatalogListQuery query,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -268,12 +266,11 @@ internal sealed partial class TitleService(
     BoardLibraryDbContext dbContext,
     IIdentityPersistenceService identityPersistenceService) : ITitleService
 {
-    public async Task<IReadOnlyList<TitleSnapshot>> ListPublicTitlesAsync(
-        string? organizationSlug,
-        string? contentKind,
+    public async Task<PublicCatalogListResult> ListPublicTitlesAsync(
+        PublicCatalogListQuery query,
         CancellationToken cancellationToken = default)
     {
-        var query = dbContext.Titles
+        var titleQuery = dbContext.Titles
             .AsNoTracking()
             .Include(candidate => candidate.Organization)
             .Include(candidate => candidate.CurrentMetadataVersion)
@@ -288,21 +285,51 @@ internal sealed partial class TitleService(
                 (candidate.LifecycleStatus == TitleLifecycleStatuses.Testing ||
                  candidate.LifecycleStatus == TitleLifecycleStatuses.Published));
 
-        if (!string.IsNullOrWhiteSpace(organizationSlug))
+        if (!string.IsNullOrWhiteSpace(query.OrganizationSlug))
         {
-            query = query.Where(candidate => candidate.Organization.Slug == organizationSlug);
+            titleQuery = titleQuery.Where(candidate => candidate.Organization.Slug == query.OrganizationSlug);
         }
 
-        if (!string.IsNullOrWhiteSpace(contentKind))
+        if (!string.IsNullOrWhiteSpace(query.ContentKind))
         {
-            query = query.Where(candidate => candidate.ContentKind == contentKind);
+            titleQuery = titleQuery.Where(candidate => candidate.ContentKind == query.ContentKind);
         }
 
-        return await query
-            .OrderBy(candidate => candidate.Organization.DisplayName)
-            .ThenBy(candidate => candidate.CurrentMetadataVersion!.DisplayName)
+        if (!string.IsNullOrWhiteSpace(query.Genre))
+        {
+            var normalizedGenre = query.Genre.Trim().ToLowerInvariant();
+            titleQuery = titleQuery.Where(candidate => candidate.CurrentMetadataVersion!.GenreDisplay.ToLower() == normalizedGenre);
+        }
+
+        titleQuery = query.Sort switch
+        {
+            CatalogSortModes.Genre => titleQuery
+                .OrderBy(candidate => candidate.CurrentMetadataVersion!.GenreDisplay)
+                .ThenBy(candidate => candidate.CurrentMetadataVersion!.DisplayName)
+                .ThenBy(candidate => candidate.Organization.DisplayName),
+            _ => titleQuery
+                .OrderBy(candidate => candidate.CurrentMetadataVersion!.DisplayName)
+                .ThenBy(candidate => candidate.Organization.DisplayName)
+                .ThenBy(candidate => candidate.CurrentMetadataVersion!.GenreDisplay)
+        };
+
+        var totalCount = await titleQuery.CountAsync(cancellationToken);
+        var titles = await titleQuery
+            .Skip((query.PageNumber - 1) * query.PageSize)
+            .Take(query.PageSize)
             .Select(candidate => MapTitle(candidate, includeDescription: false))
             .ToListAsync(cancellationToken);
+
+        var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)query.PageSize);
+        return new PublicCatalogListResult(
+            titles,
+            new CatalogPageSnapshot(
+                query.PageNumber,
+                query.PageSize,
+                totalCount,
+                totalPages,
+                query.PageNumber > 1 && totalPages > 0,
+                query.PageNumber < totalPages));
     }
 
     public async Task<TitleSnapshot?> GetPublicTitleAsync(
@@ -862,6 +889,23 @@ internal sealed record UpsertTitleMetadataCommand(
     int MinAgeYears);
 
 /// <summary>
+/// Query options for public catalog browse requests.
+/// </summary>
+/// <param name="OrganizationSlug">Optional organization route key filter.</param>
+/// <param name="ContentKind">Optional content kind filter.</param>
+/// <param name="Genre">Optional exact genre display filter.</param>
+/// <param name="Sort">Stable sort mode.</param>
+/// <param name="PageNumber">1-based page number.</param>
+/// <param name="PageSize">Requested page size.</param>
+internal sealed record PublicCatalogListQuery(
+    string? OrganizationSlug,
+    string? ContentKind,
+    string? Genre,
+    string Sort,
+    int PageNumber,
+    int PageSize);
+
+/// <summary>
 /// Flattened title projection used by endpoint DTO mapping.
 /// </summary>
 /// <param name="Id">Title identifier.</param>
@@ -915,6 +959,32 @@ internal sealed record TitleSnapshot(
     PublicTitleAcquisitionSnapshot? Acquisition,
     DateTime? CreatedAtUtc,
     DateTime? UpdatedAtUtc);
+
+/// <summary>
+/// Paging metadata returned alongside a public catalog browse result.
+/// </summary>
+/// <param name="PageNumber">1-based page number.</param>
+/// <param name="PageSize">Requested page size.</param>
+/// <param name="TotalCount">Total matched titles across all pages.</param>
+/// <param name="TotalPages">Total available pages for the current page size.</param>
+/// <param name="HasPreviousPage">Whether a previous page exists.</param>
+/// <param name="HasNextPage">Whether a next page exists.</param>
+internal sealed record CatalogPageSnapshot(
+    int PageNumber,
+    int PageSize,
+    int TotalCount,
+    int TotalPages,
+    bool HasPreviousPage,
+    bool HasNextPage);
+
+/// <summary>
+/// Paged result for public catalog browsing.
+/// </summary>
+/// <param name="Titles">Titles on the requested page.</param>
+/// <param name="Paging">Paging metadata for the overall result set.</param>
+internal sealed record PublicCatalogListResult(
+    IReadOnlyList<TitleSnapshot> Titles,
+    CatalogPageSnapshot Paging);
 
 /// <summary>
 /// Public title acquisition projection derived from the active primary binding.
@@ -1039,6 +1109,22 @@ internal enum TitleAccessStatus
     Success,
     NotFound,
     Forbidden
+}
+
+/// <summary>
+/// Supported sort modes for public catalog browsing.
+/// </summary>
+internal static class CatalogSortModes
+{
+    /// <summary>
+    /// Sort by public display title.
+    /// </summary>
+    public const string Title = "title";
+
+    /// <summary>
+    /// Sort by genre, then title.
+    /// </summary>
+    public const string Genre = "genre";
 }
 
 /// <summary>

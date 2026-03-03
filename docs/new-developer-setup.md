@@ -90,9 +90,9 @@ For full command coverage (including DB backup/restore helpers), see:
 When the API is running, verify:
 
 ```powershell
-curl http://localhost:5085/health/live
-curl http://localhost:5085/health/ready
-curl http://localhost:5085/identity/auth/config
+Invoke-WebRequest -SkipCertificateCheck -HttpVersion 2.0 https://localhost:7085/health/live
+Invoke-WebRequest -SkipCertificateCheck -HttpVersion 2.0 https://localhost:7085/health/ready
+Invoke-WebRequest -SkipCertificateCheck -HttpVersion 2.0 https://localhost:7085/identity/auth/config
 ```
 
 Current persistence note:
@@ -172,7 +172,7 @@ dotnet run --project ./backend/src/Board.ThirdPartyLibrary.Api/Board.ThirdPartyL
 Update the host port mapping in `backend/docker-compose.yml` (for example `5433:5432`) and update the backend connection string accordingly:
 
 - `backend/src/Board.ThirdPartyLibrary.Api/appsettings.Development.json`
-- or environment variable `ConnectionStrings__BoardLibrary`
+- or environment variable `ConnectionStrings__BoardLibrary` (keep `SSL Mode=VerifyFull` for the local TLS-enabled Postgres setup)
 
 ### Docker container starts but readiness fails
 
@@ -209,16 +209,16 @@ python ./scripts/dev.py up
 
 The local compose file imports a development realm for repeatable auth testing.
 
-- Keycloak admin console: `http://localhost:8080/admin/`
+- Keycloak admin console: [`https://localhost:8443/admin/`](https://localhost:8443/admin/)
 - Keycloak bootstrap admin credentials: `admin` / `admin`
 - Seeded local realm user credentials: `local-admin` / `ChangeMe!123`
 
 To exercise the backend login flow locally:
 
 1. Start the stack with `python ./scripts/dev.py up`.
-2. Open `http://localhost:5085/identity/auth/login` in a browser.
+2. Open `https://localhost:7085/identity/auth/login` in a browser.
 3. Sign in with the seeded realm user, or register a new user from the hosted Keycloak screen.
-4. Confirm the callback response at `http://localhost:5085/identity/auth/callback`.
+4. Confirm the callback response at `https://localhost:7085/identity/auth/callback`.
 5. Use the returned access token against `GET /identity/me`.
 
 ### VS Code warns about HTTPS development certificate

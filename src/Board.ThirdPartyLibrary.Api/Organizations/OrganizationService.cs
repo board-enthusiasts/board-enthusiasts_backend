@@ -10,6 +10,10 @@ internal interface IOrganizationService
 {
     Task<IReadOnlyList<OrganizationSummarySnapshot>> ListOrganizationsAsync(CancellationToken cancellationToken = default);
 
+    Task<IReadOnlyList<DeveloperOrganizationSummarySnapshot>> ListManagedOrganizationsAsync(
+        IEnumerable<Claim> claims,
+        CancellationToken cancellationToken = default);
+
     Task<OrganizationSnapshot?> GetOrganizationBySlugAsync(string slug, CancellationToken cancellationToken = default);
 
     Task<OrganizationMutationResult> CreateOrganizationAsync(
@@ -61,6 +65,31 @@ internal sealed class OrganizationService(
                 candidate.Description,
                 candidate.LogoUrl))
             .ToListAsync(cancellationToken);
+
+    public async Task<IReadOnlyList<DeveloperOrganizationSummarySnapshot>> ListManagedOrganizationsAsync(
+        IEnumerable<Claim> claims,
+        CancellationToken cancellationToken = default)
+    {
+        var actor = await EnsureActorAsync(claims, cancellationToken);
+
+        return await dbContext.OrganizationMemberships
+            .AsNoTracking()
+            .Where(candidate =>
+                candidate.UserId == actor.Id &&
+                (candidate.Role == OrganizationRoles.Owner ||
+                 candidate.Role == OrganizationRoles.Admin ||
+                 candidate.Role == OrganizationRoles.Editor))
+            .Include(candidate => candidate.Organization)
+            .OrderBy(candidate => candidate.Organization.DisplayName)
+            .Select(candidate => new DeveloperOrganizationSummarySnapshot(
+                candidate.OrganizationId,
+                candidate.Organization.Slug,
+                candidate.Organization.DisplayName,
+                candidate.Organization.Description,
+                candidate.Organization.LogoUrl,
+                candidate.Role))
+            .ToListAsync(cancellationToken);
+    }
 
     public async Task<OrganizationSnapshot?> GetOrganizationBySlugAsync(string slug, CancellationToken cancellationToken = default)
     {
@@ -448,6 +477,23 @@ internal sealed record OrganizationSummarySnapshot(
     string DisplayName,
     string? Description,
     string? LogoUrl);
+
+/// <summary>
+/// Developer-visible managed organization summary projection.
+/// </summary>
+/// <param name="Id">Organization identifier.</param>
+/// <param name="Slug">Organization route key.</param>
+/// <param name="DisplayName">Organization display name.</param>
+/// <param name="Description">Optional public description.</param>
+/// <param name="LogoUrl">Optional public logo URL.</param>
+/// <param name="Role">Caller membership role within the organization.</param>
+internal sealed record DeveloperOrganizationSummarySnapshot(
+    Guid Id,
+    string Slug,
+    string DisplayName,
+    string? Description,
+    string? LogoUrl,
+    string Role);
 
 /// <summary>
 /// Detailed organization projection.
