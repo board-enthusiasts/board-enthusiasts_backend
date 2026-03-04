@@ -27,6 +27,7 @@ Current implemented behavior:
 - Keycloak hosts login and self-registration.
 - Keycloak owns credentials, email verification, external identity-provider linkage, session/token lifecycle, and platform role assignment.
 - The backend validates Keycloak-issued bearer tokens and reads platform roles from JWT claims.
+- The backend may mediate current-user developer enrollment by calling Keycloak admin APIs, but Keycloak remains the source of truth for the resulting role assignment.
 - Keycloak is also the intended broker for future Google, Facebook, Steam, Epic Games, and similar SSO providers.
 - PostgreSQL is now the source of truth for the application-owned `users` projection and optional `user_board_profiles` linkage/cache.
 
@@ -42,6 +43,7 @@ Keycloak is the source of truth for:
 - linked external identity providers
 - platform roles such as `player`, `developer`, `admin`, and `moderator`
 - session and token issuance/revocation state
+- the persisted result of developer enrollment when the backend requests Keycloak to grant the `developer` realm role
 
 These concerns should not be duplicated in PostgreSQL as primary auth tables.
 

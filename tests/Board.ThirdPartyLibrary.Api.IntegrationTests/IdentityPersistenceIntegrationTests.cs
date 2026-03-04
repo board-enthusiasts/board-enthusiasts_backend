@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using Board.ThirdPartyLibrary.Api.Auth;
 using Board.ThirdPartyLibrary.Api.Persistence;
 using Board.ThirdPartyLibrary.Api.Persistence.Entities;
 using Microsoft.AspNetCore.Authentication;
@@ -139,6 +140,48 @@ public sealed class IdentityPersistenceIntegrationTests : IAsyncLifetime
     }
 
     /// <summary>
+    /// Verifies developer enrollment persists the local user projection and returns the enabled response.
+    /// </summary>
+    [Fact]
+    public async Task DeveloperEnrollmentEndpoint_WithRealPostgres_PersistsUserProjectionAndReturnsEnabled()
+    {
+        await using (var migrationContext = CreateDbContext())
+        {
+            await migrationContext.Database.MigrateAsync();
+        }
+
+        using var factory = new RealPostgresApiFactory(
+            _postgresContainer.GetConnectionString(),
+            [
+                new Claim("sub", "user-456"),
+                new Claim("name", "Player One"),
+                new Claim("email", "player@boardtpl.local"),
+                new Claim("email_verified", "true"),
+                new Claim(ClaimTypes.Role, "player")
+            ],
+            configureServices: services =>
+            {
+                services.RemoveAll<IKeycloakUserRoleClient>();
+                services.AddSingleton<IKeycloakUserRoleClient>(
+                    new StubKeycloakUserRoleClient(KeycloakUserRoleAssignmentResult.Success(alreadyAssigned: false)));
+            });
+        using var client = factory.CreateClient();
+
+        using var response = await client.PostAsync("/identity/me/developer-enrollment", null);
+        var payload = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(payload);
+        Assert.True(document.RootElement.GetProperty("developerEnrollment").GetProperty("developerAccessEnabled").GetBoolean());
+        Assert.True(document.RootElement.GetProperty("developerEnrollment").GetProperty("sessionRefreshRequired").GetBoolean());
+
+        await using var dbContext = CreateDbContext();
+        var user = await dbContext.Users.SingleAsync(candidate => candidate.KeycloakSubject == "user-456");
+        Assert.Equal("Player One", user.DisplayName);
+    }
+
+    /// <summary>
     /// Verifies the schema rejects duplicate Keycloak subject values.
     /// </summary>
     [Fact]
@@ -235,11 +278,16 @@ public sealed class IdentityPersistenceIntegrationTests : IAsyncLifetime
     {
         private readonly string _connectionString;
         private readonly IReadOnlyList<Claim> _claims;
+        private readonly Action<IServiceCollection>? _configureServices;
 
-        public RealPostgresApiFactory(string connectionString, IReadOnlyList<Claim> claims)
+        public RealPostgresApiFactory(
+            string connectionString,
+            IReadOnlyList<Claim> claims,
+            Action<IServiceCollection>? configureServices = null)
         {
             _connectionString = connectionString;
             _claims = claims;
+            _configureServices = configureServices;
         }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -269,8 +317,30 @@ public sealed class IdentityPersistenceIntegrationTests : IAsyncLifetime
                     options.DefaultChallengeScheme = TestAuthHandler.SchemeName;
                     options.DefaultScheme = TestAuthHandler.SchemeName;
                 }).AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
+
+                services.RemoveAll<IKeycloakUserRoleClient>();
+                services.AddSingleton<IKeycloakUserRoleClient>(
+                    new StubKeycloakUserRoleClient(KeycloakUserRoleAssignmentResult.Success(alreadyAssigned: false)));
+
+                _configureServices?.Invoke(services);
             });
         }
+    }
+
+    private sealed class StubKeycloakUserRoleClient : IKeycloakUserRoleClient
+    {
+        private readonly KeycloakUserRoleAssignmentResult _result;
+
+        public StubKeycloakUserRoleClient(KeycloakUserRoleAssignmentResult result)
+        {
+            _result = result;
+        }
+
+        public Task<KeycloakUserRoleAssignmentResult> EnsureRealmRoleAssignedAsync(
+            string userSubject,
+            string roleName,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(_result);
     }
 
     private sealed class TestAuthClaimsProvider
