@@ -44,6 +44,7 @@
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
+      "serviceAccountsEnabled": true,
       "secret": "board-third-party-library-backend-secret",
       "redirectUris": [
         "https://localhost:7085/identity/auth/callback"
@@ -99,6 +100,18 @@
           "temporary": false
         }
       ]
+    },
+    {
+      "username": "service-account-board-third-party-library-backend",
+      "enabled": true,
+      "serviceAccountClientId": "board-third-party-library-backend",
+      "clientRoles": {
+        "realm-management": [
+          "manage-users",
+          "view-users",
+          "view-realm"
+        ]
+      }
     }
   ]
 }

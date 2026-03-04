@@ -144,6 +144,50 @@ internal static class IdentityEndpoints
             return Results.Ok(BuildCurrentUserResponse(user.Claims));
         });
 
+        group.MapPost("/me/developer-enrollment", [Authorize] async (
+            ClaimsPrincipal user,
+            IIdentityPersistenceService identityPersistenceService,
+            IKeycloakUserRoleClient keycloakUserRoleClient,
+            CancellationToken cancellationToken) =>
+        {
+            await identityPersistenceService.EnsureCurrentUserProjectionAsync(user.Claims, cancellationToken);
+
+            if (HasRole(user.Claims, "developer"))
+            {
+                return Results.Ok(new DeveloperEnrollmentResponse(new DeveloperEnrollment(
+                    Status: "enabled",
+                    DeveloperAccessEnabled: true,
+                    AlreadyEnabled: true,
+                    SessionRefreshRequired: false)));
+            }
+
+            var subject = ClaimValueResolver.GetSubject(user.Claims);
+            if (string.IsNullOrWhiteSpace(subject))
+            {
+                return CreateProblemResult(
+                    StatusCodes.Status400BadRequest,
+                    "Authenticated subject is invalid.",
+                    "The authenticated token did not include a usable subject identifier.",
+                    "invalid_authenticated_subject");
+            }
+
+            var roleAssignment = await keycloakUserRoleClient.EnsureRealmRoleAssignedAsync(subject, "developer", cancellationToken);
+            if (!roleAssignment.Succeeded)
+            {
+                return CreateProblemResult(
+                    StatusCodes.Status502BadGateway,
+                    "Developer enrollment could not be completed.",
+                    roleAssignment.ErrorDetail ?? "Keycloak role assignment failed for the authenticated user.",
+                    "keycloak_developer_enrollment_failed");
+            }
+
+            return Results.Ok(new DeveloperEnrollmentResponse(new DeveloperEnrollment(
+                Status: "enabled",
+                DeveloperAccessEnabled: true,
+                AlreadyEnabled: roleAssignment.AlreadyAssigned,
+                SessionRefreshRequired: true)));
+        });
+
         group.MapGet("/me/board-profile", [Authorize] async (
             ClaimsPrincipal user,
             IIdentityPersistenceService identityPersistenceService,
@@ -251,6 +295,11 @@ internal static class IdentityEndpoints
                 .ToArray());
     }
 
+    private static bool HasRole(IEnumerable<Claim> claims, string role) =>
+        claims.Any(claim =>
+            claim.Type == ClaimTypes.Role &&
+            string.Equals(claim.Value, role, StringComparison.OrdinalIgnoreCase));
+
     private static IEnumerable<Claim> ReadClaims(string accessToken) =>
         new JwtSecurityTokenHandler().ReadJwtToken(accessToken).Claims;
 
@@ -333,6 +382,25 @@ internal sealed record CurrentUserResponse(
     bool EmailVerified,
     string? IdentityProvider,
     IReadOnlyList<string> Roles);
+
+/// <summary>
+/// Developer-enrollment state for the current user.
+/// </summary>
+/// <param name="Status">Player-facing enrollment status.</param>
+/// <param name="DeveloperAccessEnabled">Whether developer access is enabled in Keycloak.</param>
+/// <param name="AlreadyEnabled">Whether the access already existed before the call.</param>
+/// <param name="SessionRefreshRequired">Whether the current session must refresh tokens to see the new role claims.</param>
+internal sealed record DeveloperEnrollment(
+    string Status,
+    bool DeveloperAccessEnabled,
+    bool AlreadyEnabled,
+    bool SessionRefreshRequired);
+
+/// <summary>
+/// Response wrapper for developer enrollment.
+/// </summary>
+/// <param name="DeveloperEnrollment">Developer enrollment result.</param>
+internal sealed record DeveloperEnrollmentResponse(DeveloperEnrollment DeveloperEnrollment);
 
 /// <summary>
 /// Linked Board profile summary for the current user.

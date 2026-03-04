@@ -42,6 +42,17 @@ internal sealed class KeycloakEndpointResolver : IKeycloakEndpointResolver
     /// <inheritdoc />
     public Uri GetCallbackUri() => new($"{_options.PublicBackendBaseUrl.TrimEnd('/')}/identity/auth/callback");
 
+    /// <inheritdoc />
+    public Uri GetAdminRealmRoleUri(string roleName) =>
+        new($"{GetAdminRealmBaseUrl()}/roles/{Uri.EscapeDataString(roleName)}");
+
+    /// <inheritdoc />
+    public Uri GetAdminUserRealmRoleMappingsUri(string userSubject) =>
+        new($"{GetAdminRealmBaseUrl()}/users/{Uri.EscapeDataString(userSubject)}/role-mappings/realm");
+
     private string GetRealmBaseUrl() =>
         $"{_options.BaseUrl.TrimEnd('/')}/realms/{Uri.EscapeDataString(_options.Realm)}";
+
+    private string GetAdminRealmBaseUrl() =>
+        $"{_options.BaseUrl.TrimEnd('/')}/admin/realms/{Uri.EscapeDataString(_options.Realm)}";
 }

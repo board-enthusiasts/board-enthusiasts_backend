@@ -44,4 +44,14 @@ internal interface IKeycloakEndpointResolver
     /// Gets the backend callback URI used for the authorization code flow.
     /// </summary>
     Uri GetCallbackUri();
+
+    /// <summary>
+    /// Gets the Keycloak admin realm roles endpoint URI.
+    /// </summary>
+    Uri GetAdminRealmRoleUri(string roleName);
+
+    /// <summary>
+    /// Gets the Keycloak admin user realm-role-mapping endpoint URI.
+    /// </summary>
+    Uri GetAdminUserRealmRoleMappingsUri(string userSubject);
 }

@@ -44,6 +44,11 @@ builder.Services.AddHttpClient<IKeycloakTokenClient, KeycloakTokenClient>(client
     client.DefaultRequestVersion = HttpVersion.Version20;
     client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrHigher;
 });
+builder.Services.AddHttpClient<IKeycloakUserRoleClient, KeycloakUserRoleClient>(client =>
+{
+    client.DefaultRequestVersion = HttpVersion.Version20;
+    client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionOrHigher;
+});
 
 var keycloakOptions = builder.Configuration.GetSection(KeycloakOptions.SectionName).Get<KeycloakOptions>() ?? new KeycloakOptions();
 var authority = $"{keycloakOptions.BaseUrl.TrimEnd('/')}/realms/{Uri.EscapeDataString(keycloakOptions.Realm)}";

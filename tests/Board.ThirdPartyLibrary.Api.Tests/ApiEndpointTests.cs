@@ -480,6 +480,133 @@ public sealed class ApiEndpointTests
     }
 
     /// <summary>
+    /// Verifies the developer-enrollment endpoint requires authentication.
+    /// </summary>
+    [Fact]
+    public async Task DeveloperEnrollmentEndpoint_WithoutBearerToken_ReturnsUnauthorized()
+    {
+        using var factory = new TestApiFactory();
+        using var client = factory.CreateClient();
+
+        using var response = await client.PostAsync("/identity/me/developer-enrollment", null);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    /// <summary>
+    /// Verifies callers who already have developer access receive an already-enabled response.
+    /// </summary>
+    [Fact]
+    public async Task DeveloperEnrollmentEndpoint_WithExistingDeveloperRole_ReturnsAlreadyEnabled()
+    {
+        var roleClient = new StubKeycloakUserRoleClient(KeycloakUserRoleAssignmentResult.Success(alreadyAssigned: true));
+
+        using var factory = new TestApiFactory(
+            configureServices: services =>
+            {
+                services.RemoveAll<IKeycloakUserRoleClient>();
+                services.AddSingleton<IKeycloakUserRoleClient>(roleClient);
+            },
+            useTestAuthentication: true,
+            testClaims:
+            [
+                new Claim("sub", "user-123"),
+                new Claim("name", "Local Developer"),
+                new Claim(ClaimTypes.Role, "developer")
+            ]);
+        using var client = factory.CreateClient();
+
+        using var response = await client.PostAsync("/identity/me/developer-enrollment", null);
+        var payload = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(payload);
+        var enrollment = document.RootElement.GetProperty("developerEnrollment");
+        Assert.Equal("enabled", enrollment.GetProperty("status").GetString());
+        Assert.True(enrollment.GetProperty("developerAccessEnabled").GetBoolean());
+        Assert.True(enrollment.GetProperty("alreadyEnabled").GetBoolean());
+        Assert.False(enrollment.GetProperty("sessionRefreshRequired").GetBoolean());
+        Assert.Equal(0, roleClient.CallCount);
+    }
+
+    /// <summary>
+    /// Verifies player-only callers can enable developer access through the backend endpoint.
+    /// </summary>
+    [Fact]
+    public async Task DeveloperEnrollmentEndpoint_WithPlayerRole_AssignsDeveloperAccess()
+    {
+        var roleClient = new StubKeycloakUserRoleClient(KeycloakUserRoleAssignmentResult.Success(alreadyAssigned: false));
+
+        using var factory = new TestApiFactory(
+            configureServices: services =>
+            {
+                services.RemoveAll<IKeycloakUserRoleClient>();
+                services.AddSingleton<IKeycloakUserRoleClient>(roleClient);
+            },
+            useTestAuthentication: true,
+            testClaims:
+            [
+                new Claim("sub", "user-123"),
+                new Claim("name", "Player One"),
+                new Claim("email", "player@boardtpl.local"),
+                new Claim("email_verified", "true"),
+                new Claim(ClaimTypes.Role, "player")
+            ]);
+        using var client = factory.CreateClient();
+
+        using var response = await client.PostAsync("/identity/me/developer-enrollment", null);
+        var payload = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var document = JsonDocument.Parse(payload);
+        var enrollment = document.RootElement.GetProperty("developerEnrollment");
+        Assert.Equal("enabled", enrollment.GetProperty("status").GetString());
+        Assert.True(enrollment.GetProperty("developerAccessEnabled").GetBoolean());
+        Assert.False(enrollment.GetProperty("alreadyEnabled").GetBoolean());
+        Assert.True(enrollment.GetProperty("sessionRefreshRequired").GetBoolean());
+        Assert.Equal(1, roleClient.CallCount);
+
+        using var scope = factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<BoardLibraryDbContext>();
+        var user = await dbContext.Users.SingleAsync(candidate => candidate.KeycloakSubject == "user-123");
+        Assert.Equal("Player One", user.DisplayName);
+    }
+
+    /// <summary>
+    /// Verifies upstream Keycloak enrollment failures return a gateway problem response.
+    /// </summary>
+    [Fact]
+    public async Task DeveloperEnrollmentEndpoint_WhenKeycloakRoleAssignmentFails_ReturnsBadGateway()
+    {
+        using var factory = new TestApiFactory(
+            configureServices: services =>
+            {
+                services.RemoveAll<IKeycloakUserRoleClient>();
+                services.AddSingleton<IKeycloakUserRoleClient>(
+                    new StubKeycloakUserRoleClient(
+                        KeycloakUserRoleAssignmentResult.Failure("Keycloak role assignment failed for the authenticated user.")));
+            },
+            useTestAuthentication: true,
+            testClaims:
+            [
+                new Claim("sub", "user-123"),
+                new Claim("name", "Player One"),
+                new Claim(ClaimTypes.Role, "player")
+            ]);
+        using var client = factory.CreateClient();
+
+        using var response = await client.PostAsync("/identity/me/developer-enrollment", null);
+        var payload = await response.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.BadGateway, response.StatusCode);
+
+        using var document = JsonDocument.Parse(payload);
+        Assert.Equal("keycloak_developer_enrollment_failed", document.RootElement.GetProperty("code").GetString());
+    }
+
+    /// <summary>
     /// Verifies the linked Board profile endpoint requires authentication.
     /// </summary>
     [Fact]
@@ -730,6 +857,10 @@ public sealed class ApiEndpointTests
                     }).AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
                 }
 
+                services.RemoveAll<IKeycloakUserRoleClient>();
+                services.AddSingleton<IKeycloakUserRoleClient>(
+                    new StubKeycloakUserRoleClient(KeycloakUserRoleAssignmentResult.Success(alreadyAssigned: false)));
+
                 _configureServices?.Invoke(services);
             });
         }
@@ -787,6 +918,27 @@ public sealed class ApiEndpointTests
             KeycloakTokenExchangeRequest request,
             CancellationToken cancellationToken = default) =>
             Task.FromResult(_result);
+    }
+
+    private sealed class StubKeycloakUserRoleClient : IKeycloakUserRoleClient
+    {
+        private readonly KeycloakUserRoleAssignmentResult _result;
+
+        public StubKeycloakUserRoleClient(KeycloakUserRoleAssignmentResult result)
+        {
+            _result = result;
+        }
+
+        public int CallCount { get; private set; }
+
+        public Task<KeycloakUserRoleAssignmentResult> EnsureRealmRoleAssignedAsync(
+            string userSubject,
+            string roleName,
+            CancellationToken cancellationToken = default)
+        {
+            CallCount++;
+            return Task.FromResult(_result);
+        }
     }
 
     private sealed class TestAuthClaimsProvider
