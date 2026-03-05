@@ -320,6 +320,7 @@ public sealed class IdentityPersistenceIntegrationTests : IAsyncLifetime
             [
                 new Claim("sub", "moderator-123"),
                 new Claim("name", "Moderator User"),
+                new Claim(ClaimTypes.Role, "player"),
                 new Claim(ClaimTypes.Role, "moderator")
             ],
             configureServices: services =>
