@@ -420,6 +420,37 @@ public sealed class ApiEndpointTests
     }
 
     /// <summary>
+    /// Verifies missing player-role claims are reconciled into Keycloak for authenticated users.
+    /// </summary>
+    [Fact]
+    public async Task CurrentUserEndpoint_WithMissingPlayerRole_AssignsPlayerRoleInKeycloak()
+    {
+        var roleClient = new StubKeycloakUserRoleClient(
+            assignResult: KeycloakUserRoleMutationResult.Success(alreadyInRequestedState: false));
+
+        using var factory = new TestApiFactory(
+            configureServices: services =>
+            {
+                services.RemoveAll<IKeycloakUserRoleClient>();
+                services.AddSingleton<IKeycloakUserRoleClient>(roleClient);
+            },
+            useTestAuthentication: true,
+            testClaims:
+            [
+                new Claim("sub", "user-123"),
+                new Claim("name", "Local Developer"),
+                new Claim(ClaimTypes.Role, "developer")
+            ]);
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/identity/me");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(1, roleClient.GetAssignCallCountForRole("player"));
+        Assert.Equal("user-123", roleClient.GetLastAssignedUserSubjectForRole("player"));
+    }
+
+    /// <summary>
     /// Verifies the current-user endpoint accepts the framework-mapped nameidentifier claim as the user subject.
     /// </summary>
     [Fact]
@@ -812,6 +843,7 @@ public sealed class ApiEndpointTests
             [
                 new Claim("sub", "user-123"),
                 new Claim("name", "Local Developer"),
+                new Claim(ClaimTypes.Role, "player"),
                 new Claim(ClaimTypes.Role, "developer")
             ]);
         using var client = factory.CreateClient();
@@ -827,7 +859,7 @@ public sealed class ApiEndpointTests
         Assert.True(enrollment.GetProperty("developerAccessEnabled").GetBoolean());
         Assert.False(enrollment.GetProperty("verifiedDeveloper").GetBoolean());
         Assert.False(enrollment.GetProperty("canSubmitRequest").GetBoolean());
-        Assert.Equal(0, roleClient.AssignCallCount);
+        Assert.Equal(0, roleClient.GetAssignCallCountForRole("developer"));
     }
 
     /// <summary>
@@ -868,8 +900,8 @@ public sealed class ApiEndpointTests
         Assert.True(enrollment.GetProperty("developerAccessEnabled").GetBoolean());
         Assert.False(enrollment.GetProperty("verifiedDeveloper").GetBoolean());
         Assert.False(enrollment.GetProperty("canSubmitRequest").GetBoolean());
-        Assert.Equal(1, roleClient.AssignCallCount);
-        Assert.Equal("user-123", roleClient.LastAssignedUserSubject);
+        Assert.Equal(1, roleClient.GetAssignCallCountForRole("developer"));
+        Assert.Equal("user-123", roleClient.GetLastAssignedUserSubjectForRole("developer"));
     }
 
     /// <summary>
@@ -948,6 +980,7 @@ public sealed class ApiEndpointTests
             testClaims:
             [
                 new Claim("sub", "moderator-123"),
+                new Claim(ClaimTypes.Role, "player"),
                 new Claim(ClaimTypes.Role, "moderator")
             ]);
         using var client = factory.CreateClient();
@@ -963,7 +996,7 @@ public sealed class ApiEndpointTests
         Assert.True(state.GetProperty("verifiedDeveloper").GetBoolean());
         Assert.False(state.GetProperty("alreadyInRequestedState").GetBoolean());
         Assert.Equal(1, roleClient.RoleCheckCallCount);
-        Assert.Equal(1, roleClient.AssignCallCount);
+        Assert.Equal(1, roleClient.GetAssignCallCountForRole("verified_developer"));
     }
 
     /// <summary>
@@ -986,6 +1019,7 @@ public sealed class ApiEndpointTests
             testClaims:
             [
                 new Claim("sub", "moderator-123"),
+                new Claim(ClaimTypes.Role, "player"),
                 new Claim(ClaimTypes.Role, "moderator")
             ]);
         using var client = factory.CreateClient();
@@ -1023,6 +1057,7 @@ public sealed class ApiEndpointTests
             testClaims:
             [
                 new Claim("sub", "moderator-123"),
+                new Claim(ClaimTypes.Role, "player"),
                 new Claim(ClaimTypes.Role, "moderator")
             ]);
 
@@ -1360,6 +1395,8 @@ public sealed class ApiEndpointTests
         private readonly KeycloakUserRoleMutationResult _removeResult;
         private readonly KeycloakUserRoleCheckResult _roleCheckResult;
         private readonly Func<string, KeycloakUserRoleCheckResult>? _roleCheckResolver;
+        private readonly List<string> _assignedRoleNames = [];
+        private readonly Dictionary<string, string> _lastAssignedSubjectsByRole = new(StringComparer.OrdinalIgnoreCase);
 
         public StubKeycloakUserRoleClient(
             KeycloakUserRoleMutationResult? assignResult = null,
@@ -1381,6 +1418,12 @@ public sealed class ApiEndpointTests
 
         public string? LastAssignedUserSubject { get; private set; }
 
+        public int GetAssignCallCountForRole(string roleName) =>
+            _assignedRoleNames.Count(candidate => string.Equals(candidate, roleName, StringComparison.OrdinalIgnoreCase));
+
+        public string? GetLastAssignedUserSubjectForRole(string roleName) =>
+            _lastAssignedSubjectsByRole.TryGetValue(roleName, out var subject) ? subject : null;
+
         public Task<KeycloakUserRoleMutationResult> EnsureRealmRoleAssignedAsync(
             string userSubject,
             string roleName,
@@ -1388,6 +1431,8 @@ public sealed class ApiEndpointTests
         {
             AssignCallCount++;
             LastAssignedUserSubject = userSubject;
+            _assignedRoleNames.Add(roleName);
+            _lastAssignedSubjectsByRole[roleName] = userSubject;
             return Task.FromResult(_assignResult);
         }
 
