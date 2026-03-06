@@ -41,7 +41,7 @@ Keycloak is the source of truth for:
 - passwords and credential policies
 - email verification and password reset flows
 - linked external identity providers
-- platform roles such as `player`, `developer`, `admin`, and `moderator`
+- platform roles such as `player`, `developer`, `verified_developer`, `super_admin`, `admin`, and `moderator`
 - session and token issuance/revocation state
 - the persisted result of developer enrollment when the backend requests Keycloak to grant the `developer` realm role
 
@@ -89,6 +89,14 @@ Local identity seed data is currently provided by Keycloak realm import, not Pos
 
 - Keycloak realm import file: [`backend/keycloak/import/board-third-party-library-realm.json`](../keycloak/import/board-third-party-library-realm.json)
 - Local login test user: `local-admin` / `ChangeMe!123`
+
+For richer local UI/UX validation data, use the root seed command:
+
+```bash
+python ./scripts/dev.py seed-data --reset-media
+```
+
+That workflow provisions deterministic local Keycloak users/roles and repopulates local PostgreSQL catalog test data.
 
 If new platform roles are introduced, update both:
 
