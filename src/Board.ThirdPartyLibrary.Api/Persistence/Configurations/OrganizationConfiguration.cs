@@ -8,7 +8,7 @@ internal sealed class OrganizationConfiguration : IEntityTypeConfiguration<Organ
 {
     public void Configure(EntityTypeBuilder<Organization> builder)
     {
-        builder.ToTable("organizations", tableBuilder =>
+        builder.ToTable("studios", tableBuilder =>
             tableBuilder.HasComment("Developer organizations that own catalog content and related configuration."));
 
         builder.HasKey(organization => organization.Id)

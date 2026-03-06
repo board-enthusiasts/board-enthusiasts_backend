@@ -8,7 +8,7 @@ internal sealed class OrganizationMembershipConfiguration : IEntityTypeConfigura
 {
     public void Configure(EntityTypeBuilder<OrganizationMembership> builder)
     {
-        builder.ToTable("organization_memberships", tableBuilder =>
+        builder.ToTable("studio_memberships", tableBuilder =>
         {
             tableBuilder.HasComment("Organization-scoped memberships and roles owned by the application database.");
             tableBuilder.HasCheckConstraint(
