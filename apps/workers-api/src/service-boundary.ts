@@ -135,6 +135,8 @@ type StudioRow = {
   slug: string;
   display_name: string;
   description: string | null;
+  avatar_url: string | null;
+  avatar_storage_path: string | null;
   logo_url: string | null;
   logo_storage_path: string | null;
   banner_url: string | null;
@@ -726,6 +728,7 @@ interface StudioMutationRequest {
   slug: string;
   displayName: string;
   description?: string | null;
+  avatarUrl?: string | null;
   logoUrl?: string | null;
   bannerUrl?: string | null;
 }
@@ -1711,6 +1714,7 @@ export class WorkerAppService {
         slug: input.slug,
         display_name: input.displayName,
         description: input.description ?? null,
+        avatar_url: input.avatarUrl ?? null,
         logo_url: input.logoUrl ?? null,
         banner_url: input.bannerUrl ?? null,
         created_by_user_id: user.appUser.id,
@@ -1757,6 +1761,7 @@ export class WorkerAppService {
         slug: input.slug,
         display_name: input.displayName,
         description: input.description ?? null,
+        avatar_url: input.avatarUrl ?? null,
         logo_url: input.logoUrl ?? null,
         banner_url: input.bannerUrl ?? null,
         updated_at: new Date().toISOString()
@@ -1854,11 +1859,11 @@ export class WorkerAppService {
     }
   }
 
-  async uploadStudioMedia(token: string, studioId: string, kind: "logo" | "banner", file: File | null): Promise<StudioResponse> {
+  async uploadStudioMedia(token: string, studioId: string, kind: "avatar" | "logo" | "banner", file: File | null): Promise<StudioResponse> {
     const user = await this.requireUser(token);
     const studio = await this.getStudioById(studioId);
     await this.requireStudioAccess(user.appUser.id, studio.id);
-    const uploadSurface = kind === "logo" ? "studioLogo" : "studioBanner";
+    const uploadSurface = kind === "avatar" ? "avatar" : kind === "logo" ? "studioLogo" : "studioBanner";
     const validatedFile = this.requireUploadFile(file, uploadSurface);
     const bucket = this.getStorageBucketForSurface(uploadSurface);
 
@@ -1873,7 +1878,13 @@ export class WorkerAppService {
 
     const publicUrl = this.client.storage.from(bucket).getPublicUrl(storagePath).data.publicUrl;
     const updatePayload =
-      kind === "logo"
+      kind === "avatar"
+        ? {
+            avatar_url: publicUrl,
+            avatar_storage_path: storagePath,
+            updated_at: new Date().toISOString()
+          }
+        : kind === "logo"
         ? {
             logo_url: publicUrl,
             logo_storage_path: storagePath,
@@ -2865,6 +2876,9 @@ export class WorkerAppService {
     if (input.bannerUrl && !isAbsoluteUrl(input.bannerUrl)) {
       errors.bannerUrl = ["Banner URL must be an absolute URI."];
     }
+    if (input.avatarUrl && !isAbsoluteUrl(input.avatarUrl)) {
+      errors.avatarUrl = ["Avatar URL must be an absolute URI."];
+    }
 
     if (Object.keys(errors).length > 0) {
       throw validationProblem(errors);
@@ -3543,6 +3557,7 @@ export class WorkerAppService {
       slug: studio.slug,
       displayName: studio.display_name,
       description: studio.description,
+      avatarUrl: studio.avatar_url,
       logoUrl: studio.logo_url,
       bannerUrl: studio.banner_url,
       links: links.map(mapStudioLink),
