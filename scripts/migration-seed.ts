@@ -445,7 +445,7 @@ async function seedOnce(options: SeedOptions): Promise<void> {
     );
     const uploadedAvatar = await uploadAsset(
       client,
-      options.bucket,
+      options.avatarsBucket,
       options.assetRoot,
       studio.avatarAssetPath,
       `studios/${studio.slug}/avatar${path.extname(studio.avatarAssetPath).toLowerCase()}`,
