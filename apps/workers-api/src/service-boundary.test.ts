@@ -241,6 +241,46 @@ describe("WorkerAppService.createMarketingSignup", () => {
       }),
     );
   });
+
+  it("can bypass turnstile verification for deploy smoke signups while still syncing Brevo", async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: 314 }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+      BREVO_API_KEY: "brevo-api-key",
+      BREVO_SIGNUPS_LIST_ID: "12",
+      DEPLOY_SMOKE_SECRET: "smoke-secret",
+    });
+
+    const response = await service.createMarketingSignup(
+      {
+        email: "smoke@example.com",
+        firstName: "Smoke",
+        source: "landing_page",
+        consentTextVersion: "landing-page-v1",
+        turnstileToken: null,
+        roleInterests: ["player"],
+      },
+      { bypassTurnstile: true },
+    );
+
+    expect(response.accepted).toBe(true);
+    expect(response.signup.roleInterests).toEqual(["player"]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.brevo.com/v3/contacts",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+  });
 });
 
 describe("WorkerAppService.getContext", () => {
@@ -257,6 +297,7 @@ describe("WorkerAppService.getContext", () => {
       supabaseCardImagesBucket: "card-images",
       supabaseHeroImagesBucket: "hero-images",
       supabaseLogoImagesBucket: "logo-images",
+      deploySmokeSecret: null,
     });
   });
 
@@ -277,6 +318,26 @@ describe("WorkerAppService.getContext", () => {
       supabaseCardImagesBucket: "custom-card-images",
       supabaseHeroImagesBucket: "custom-hero-images",
       supabaseLogoImagesBucket: "custom-logo-images",
+    });
+  });
+
+  it("normalizes deploy-smoke and integration placeholders as unset values", () => {
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+      BREVO_API_KEY: "optional-for-staging",
+      BREVO_SIGNUPS_LIST_ID: "replace-me",
+      TURNSTILE_SECRET_KEY: "replace-with-turnstile-secret",
+      DEPLOY_SMOKE_SECRET: "replace-me",
+    });
+
+    expect(service.getContext()).toMatchObject({
+      brevoApiKey: null,
+      brevoSignupsListId: null,
+      turnstileSecretKey: null,
+      deploySmokeSecret: null,
     });
   });
 });

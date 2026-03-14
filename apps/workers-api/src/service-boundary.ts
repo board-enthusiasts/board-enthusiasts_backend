@@ -679,6 +679,7 @@ export interface Env {
   SUPPORT_REPORT_RECIPIENT?: string;
   SUPPORT_REPORT_SENDER_EMAIL?: string;
   SUPPORT_REPORT_SENDER_NAME?: string;
+  DEPLOY_SMOKE_SECRET?: string;
   MAILPIT_BASE_URL?: string;
 }
 
@@ -698,6 +699,7 @@ export interface WorkerAppContext {
   supportReportRecipient: string;
   supportReportSenderEmail: string;
   supportReportSenderName: string;
+  deploySmokeSecret: string | null;
   mailpitBaseUrl: string | null;
 }
 
@@ -798,8 +800,23 @@ function parseContext(env: Env): WorkerAppContext {
   const supabaseUrl = (env.SUPABASE_URL ?? "").trim();
   const supabasePublishableKey = (env.SUPABASE_PUBLISHABLE_KEY ?? "").trim();
   const supabaseSecretKey = (env.SUPABASE_SECRET_KEY ?? "").trim();
-  const parsedBrevoListId = Number((env.BREVO_SIGNUPS_LIST_ID ?? "").trim());
   const mailpitBaseUrl = (env.MAILPIT_BASE_URL ?? "").trim();
+  function normalizeOptionalEnvValue(value: string | undefined): string | null {
+    const trimmed = (value ?? "").trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const normalized = trimmed.toLowerCase();
+    if (normalized.startsWith("optional-for-") || normalized === "replace-me" || normalized.startsWith("replace-with-")) {
+      return null;
+    }
+
+    return trimmed;
+  }
+
+  const brevoListIdRaw = normalizeOptionalEnvValue(env.BREVO_SIGNUPS_LIST_ID);
+  const parsedBrevoListId = Number(brevoListIdRaw ?? "");
   const allowedWebOrigins = (env.ALLOWED_WEB_ORIGINS ?? "")
     .split(",")
     .map((candidate) => candidate.trim())
@@ -824,14 +841,19 @@ function parseContext(env: Env): WorkerAppContext {
     supabaseHeroImagesBucket: env.SUPABASE_HERO_IMAGES_BUCKET?.trim() || migrationMediaBuckets.heroImages,
     supabaseLogoImagesBucket: env.SUPABASE_LOGO_IMAGES_BUCKET?.trim() || migrationMediaBuckets.logoImages,
     allowedWebOrigins,
-    turnstileSecretKey: (env.TURNSTILE_SECRET_KEY ?? "").trim() || null,
-    brevoApiKey: (env.BREVO_API_KEY ?? "").trim() || null,
+    turnstileSecretKey: normalizeOptionalEnvValue(env.TURNSTILE_SECRET_KEY),
+    brevoApiKey: normalizeOptionalEnvValue(env.BREVO_API_KEY),
     brevoSignupsListId: Number.isInteger(parsedBrevoListId) && parsedBrevoListId > 0 ? parsedBrevoListId : null,
     supportReportRecipient: (env.SUPPORT_REPORT_RECIPIENT ?? "").trim() || "support@boardenthusiasts.com",
     supportReportSenderEmail: (env.SUPPORT_REPORT_SENDER_EMAIL ?? "").trim() || "noreply@boardenthusiasts.com",
     supportReportSenderName: (env.SUPPORT_REPORT_SENDER_NAME ?? "").trim() || "Board Enthusiasts",
+    deploySmokeSecret: normalizeOptionalEnvValue(env.DEPLOY_SMOKE_SECRET),
     mailpitBaseUrl: mailpitBaseUrl || ((env.APP_ENV?.trim() || "local") === "local" ? "http://127.0.0.1:55424" : null)
   };
+}
+
+interface CreateMarketingSignupOptions {
+  bypassTurnstile?: boolean;
 }
 
 export class WorkerAppService {
@@ -867,7 +889,7 @@ export class WorkerAppService {
     };
   }
 
-  async createMarketingSignup(input: MarketingSignupRequest): Promise<MarketingSignupResponse> {
+  async createMarketingSignup(input: MarketingSignupRequest, options: CreateMarketingSignupOptions = {}): Promise<MarketingSignupResponse> {
     const email = input.email.trim();
     const normalizedEmail = normalizeEmailAddress(email);
     const firstName = trimNullableString(input.firstName, 100);
@@ -899,7 +921,9 @@ export class WorkerAppService {
       });
     }
 
-    await this.verifyTurnstile(input.turnstileToken ?? null);
+    if (!options.bypassTurnstile) {
+      await this.verifyTurnstile(input.turnstileToken ?? null);
+    }
 
     const existing = await this.getMarketingContactByNormalizedEmail(normalizedEmail);
     const timestamp = new Date().toISOString();

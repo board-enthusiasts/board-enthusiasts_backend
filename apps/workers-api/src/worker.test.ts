@@ -6,6 +6,7 @@ describe("handleMarketingSignupRoute", () => {
     const service = {
       getContext: vi.fn().mockReturnValue({
         allowedWebOrigins: ["https://boardenthusiasts.com"],
+        deploySmokeSecret: null,
       }),
       createMarketingSignup: vi.fn().mockResolvedValue({
         accepted: true,
@@ -41,20 +42,72 @@ describe("handleMarketingSignupRoute", () => {
     );
 
     expect(response.status).toBe(201);
-    expect(service.createMarketingSignup).toHaveBeenCalledWith({
-      email: "matt@example.com",
-      firstName: "Matt",
-      source: "landing_page",
-      consentTextVersion: "landing-page-v1",
-      turnstileToken: "token-123",
-      roleInterests: ["player"],
-    });
+    expect(service.createMarketingSignup).toHaveBeenCalledWith(
+      {
+        email: "matt@example.com",
+        firstName: "Matt",
+        source: "landing_page",
+        consentTextVersion: "landing-page-v1",
+        turnstileToken: "token-123",
+        roleInterests: ["player"],
+      },
+      { bypassTurnstile: false },
+    );
+  });
+
+  it("allows the deploy smoke secret to bypass turnstile verification", async () => {
+    const service = {
+      getContext: vi.fn().mockReturnValue({
+        allowedWebOrigins: ["https://boardenthusiasts.com"],
+        deploySmokeSecret: "smoke-secret",
+      }),
+      createMarketingSignup: vi.fn().mockResolvedValue({
+        accepted: true,
+        duplicate: false,
+        signup: {
+          email: "smoke@example.com",
+          firstName: "Smoke",
+          status: "subscribed",
+          lifecycleStatus: "waitlisted",
+          roleInterests: [],
+          source: "landing_page",
+          consentedAt: "2026-03-12T18:00:00Z",
+          updatedAt: "2026-03-12T18:00:00Z",
+        },
+      }),
+    };
+
+    await handleMarketingSignupRoute(
+      new Request("http://example.test/marketing/signups", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          origin: "https://boardenthusiasts.com",
+          "x-board-enthusiasts-deploy-smoke-secret": "smoke-secret",
+        },
+        body: JSON.stringify({
+          email: "smoke@example.com",
+          source: "landing_page",
+          consentTextVersion: "landing-page-v1",
+        }),
+      }),
+      service as never,
+      {},
+    );
+
+    expect(service.createMarketingSignup).toHaveBeenCalledWith(
+      expect.objectContaining({
+        email: "smoke@example.com",
+      }),
+      { bypassTurnstile: true },
+    );
   });
 
   it("rejects invalid request bodies", async () => {
     const service = {
       getContext: vi.fn().mockReturnValue({
         allowedWebOrigins: ["https://boardenthusiasts.com"],
+        deploySmokeSecret: null,
       }),
       createMarketingSignup: vi.fn(),
     };
@@ -83,6 +136,7 @@ describe("handleMarketingSignupRoute", () => {
     const service = {
       getContext: vi.fn().mockReturnValue({
         allowedWebOrigins: ["https://boardenthusiasts.com"],
+        deploySmokeSecret: null,
       }),
       createMarketingSignup: vi.fn(),
     };

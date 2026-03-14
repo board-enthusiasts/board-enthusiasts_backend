@@ -13,12 +13,13 @@ import {
 interface SeedOptions {
   supabaseUrl: string;
   secretKey: string;
-  password: string;
-  assetRoot: string;
+  password: string | null;
+  assetRoot: string | null;
   avatarsBucket: string;
   cardImagesBucket: string;
   heroImagesBucket: string;
   logoImagesBucket: string;
+  bucketsOnly: boolean;
 }
 
 interface ParsedArgs {
@@ -80,16 +81,18 @@ function requireArg(args: ParsedArgs, name: string): string {
 
 function buildOptions(argv: string[]): SeedOptions {
   const args = parseArgs(argv);
+  const bucketsOnly = (args["buckets-only"] ?? "").trim().toLowerCase() === "true";
 
   return {
     supabaseUrl: requireArg(args, "supabase-url"),
     secretKey: requireArg(args, "secret-key"),
-    password: requireArg(args, "password"),
-    assetRoot: requireArg(args, "asset-root"),
+    password: bucketsOnly ? null : requireArg(args, "password"),
+    assetRoot: bucketsOnly ? null : requireArg(args, "asset-root"),
     avatarsBucket: (args["avatars-bucket"] ?? migrationMediaBuckets.avatars).trim() || migrationMediaBuckets.avatars,
     cardImagesBucket: (args["card-images-bucket"] ?? migrationMediaBuckets.cardImages).trim() || migrationMediaBuckets.cardImages,
     heroImagesBucket: (args["hero-images-bucket"] ?? migrationMediaBuckets.heroImages).trim() || migrationMediaBuckets.heroImages,
-    logoImagesBucket: (args["logo-images-bucket"] ?? migrationMediaBuckets.logoImages).trim() || migrationMediaBuckets.logoImages
+    logoImagesBucket: (args["logo-images-bucket"] ?? migrationMediaBuckets.logoImages).trim() || migrationMediaBuckets.logoImages,
+    bucketsOnly,
   };
 }
 
@@ -354,8 +357,17 @@ async function seedOnce(options: SeedOptions): Promise<void> {
   await ensureBucket(client, options.heroImagesBucket, migrationMediaUploadPolicies.heroImages);
   await ensureBucket(client, options.logoImagesBucket, migrationMediaUploadPolicies.logoImages);
 
+  if (options.bucketsOnly) {
+    console.log("==> Hosted bucket provisioning complete");
+    console.log(`Avatars bucket: ${options.avatarsBucket}`);
+    console.log(`Card images bucket: ${options.cardImagesBucket}`);
+    console.log(`Hero images bucket: ${options.heroImagesBucket}`);
+    console.log(`Logo images bucket: ${options.logoImagesBucket}`);
+    return;
+  }
+
   console.log("==> Creating or updating deterministic Supabase auth users");
-  const authUsers = await ensureAuthUsers(client, options.password);
+  const authUsers = await ensureAuthUsers(client, options.password!);
 
   console.log("==> Resetting local demo tables");
   await resetDemoData(client);
@@ -434,7 +446,7 @@ async function seedOnce(options: SeedOptions): Promise<void> {
     const uploadedLogo = await uploadAsset(
       client,
       options.logoImagesBucket,
-      options.assetRoot,
+      options.assetRoot!,
       studio.logoAssetPath,
       `studios/${studio.slug}/logo${path.extname(studio.logoAssetPath).toLowerCase()}`,
       "image/svg+xml"
@@ -442,7 +454,7 @@ async function seedOnce(options: SeedOptions): Promise<void> {
     const uploadedBanner = await uploadAsset(
       client,
       options.heroImagesBucket,
-      options.assetRoot,
+      options.assetRoot!,
       studio.bannerAssetPath,
       `studios/${studio.slug}/banner${path.extname(studio.bannerAssetPath).toLowerCase()}`,
       "image/svg+xml"
@@ -453,7 +465,7 @@ async function seedOnce(options: SeedOptions): Promise<void> {
       ? await uploadAsset(
           client,
           options.avatarsBucket,
-          options.assetRoot,
+          options.assetRoot!,
           studio.avatarAssetPath,
           studioAvatarStoragePath,
           studioAvatarMimeType
@@ -530,7 +542,7 @@ async function seedOnce(options: SeedOptions): Promise<void> {
       const uploaded = await uploadAsset(
         client,
         getTitleMediaBucket(options, media.role),
-        options.assetRoot,
+        options.assetRoot!,
         media.assetPath,
         `titles/${title.studioSlug}/${title.slug}/${media.role}${path.extname(media.assetPath).toLowerCase()}`,
         media.mimeType

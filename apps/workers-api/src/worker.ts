@@ -123,7 +123,13 @@ export async function handleMarketingSignupRoute(
   responseHeaders: HeadersInit
 ): Promise<Response> {
   assertAllowedMarketingOrigin(request, service.getContext());
-  return json(await service.createMarketingSignup(await readJson<MarketingSignupRequest>(request)), {
+  const deploySmokeSecret = request.headers.get(deploySmokeSecretHeader)?.trim() ?? "";
+  const bypassTurnstile =
+    Boolean(deploySmokeSecret) &&
+    Boolean(service.getContext().deploySmokeSecret) &&
+    deploySmokeSecret === service.getContext().deploySmokeSecret;
+
+  return json(await service.createMarketingSignup(await readJson<MarketingSignupRequest>(request), { bypassTurnstile }), {
     status: 201,
     headers: responseHeaders
   });
@@ -559,3 +565,4 @@ export default {
     }
   }
 };
+const deploySmokeSecretHeader = "x-board-enthusiasts-deploy-smoke-secret";

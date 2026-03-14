@@ -21,6 +21,7 @@
   //   wrangler secret put SUPABASE_SECRET_KEY
   //   wrangler secret put TURNSTILE_SECRET_KEY
   //   wrangler secret put BREVO_API_KEY
+  //   wrangler secret put DEPLOY_SMOKE_SECRET
   "observability": {
     "enabled": true
   }
