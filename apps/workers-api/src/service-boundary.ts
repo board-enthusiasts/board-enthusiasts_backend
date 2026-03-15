@@ -968,7 +968,9 @@ export class WorkerAppService {
     };
 
     if (existing === null && !options.bypassTurnstile) {
-      void this.sendMarketingSignupWelcomeEmail(saved, roleInterests);
+      // Workers can terminate detached async work once the request completes.
+      // Await the delivery attempt so the welcome email actually has a chance to send.
+      await this.sendMarketingSignupWelcomeEmail(saved, roleInterests);
     }
 
     return {
