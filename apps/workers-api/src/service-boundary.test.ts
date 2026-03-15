@@ -271,6 +271,65 @@ describe("WorkerAppService.createMarketingSignup", () => {
     expect(String(fetchMock.mock.calls[2]?.[1]?.body)).toContain("\"name\":\"Interested\"");
   });
 
+  it("waits for the welcome email delivery attempt before resolving a new signup", async () => {
+    let resolveWelcome:
+      | ((value: { ok: true; json: () => Promise<{ messageId: string }> }) => void)
+      | undefined;
+    const welcomeDelivery = new Promise<{ ok: true; json: () => Promise<{ messageId: string }> }>((resolve) => {
+      resolveWelcome = resolve;
+    });
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ success: true }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ id: 123 }),
+      })
+      .mockImplementationOnce(() => welcomeDelivery);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+      TURNSTILE_SECRET_KEY: "turnstile-secret",
+      BREVO_API_KEY: "brevo-api-key",
+      BREVO_SIGNUPS_LIST_ID: "12",
+    });
+
+    let settled = false;
+    const responsePromise = service.createMarketingSignup({
+      email: "new-welcome@example.com",
+      firstName: "Welcome",
+      source: "landing_page",
+      consentTextVersion: "landing-page-v1",
+      turnstileToken: "turnstile-token",
+      roleInterests: ["player"],
+    }).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    resolveWelcome?.({
+      ok: true,
+      json: async () => ({ messageId: "welcome-awaited" }),
+    });
+
+    await expect(responsePromise).resolves.toMatchObject({
+      accepted: true,
+      duplicate: false,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it("can bypass turnstile verification for deploy smoke signups while still syncing Brevo", async () => {
     const fetchMock = vi.fn().mockResolvedValueOnce({
       ok: true,
