@@ -9,6 +9,7 @@ import {
   type MarketingSignupResponse,
   type BoardProfileResponse,
   type CreateDeveloperTitleRequest,
+  type DeleteDeveloperTitleRequest,
   migrationMediaBuckets,
   migrationMediaUploadPolicies,
   type AgeRatingAuthorityDefinition,
@@ -71,6 +72,8 @@ import {
   type UpsertTitleReleaseRequest,
   type UpdateDeveloperTitleRequest,
   type UserProfileResponse,
+  type VerifyCurrentUserPasswordRequest,
+  type VerifyCurrentUserPasswordResponse,
   type VerifiedDeveloperRoleStateResponse
 } from "@board-enthusiasts/migration-contract";
 import { problem, validationProblem } from "./http";
@@ -293,14 +296,13 @@ type TitleMetadataVersionRow = {
   updated_at: string;
 };
 
-type TitleReleaseStatus = "draft" | "published" | "withdrawn";
+type TitleReleaseStatus = "testing" | "production";
 
 type TitleReleaseRow = {
   id: string;
   title_id: string;
   version: string;
   status: TitleReleaseStatus;
-  metadata_revision_number: number;
   acquisition_url: string | null;
   is_current: boolean;
   published_at: string | null;
@@ -322,6 +324,24 @@ type WaveStateRow = {
   key: string;
   value: string;
 };
+
+export type TitleReportViewerRole = "player" | "developer" | "moderator";
+
+export function canViewerAccessTitleReportMessageAudience(
+  audience: "all" | "player" | "developer" | string,
+  viewerRole: TitleReportViewerRole,
+): boolean {
+  switch (audience) {
+    case "all":
+      return true;
+    case "player":
+      return viewerRole === "player" || viewerRole === "moderator";
+    case "developer":
+      return viewerRole === "developer" || viewerRole === "moderator";
+    default:
+      return viewerRole === "moderator";
+  }
+}
 
 const roleOrder: PlatformRole[] = ["player", "developer", "verified_developer", "moderator", "admin", "super_admin"];
 const marketingRoleInterestOrder: MarketingContactRoleInterest[] = ["developer", "player"];
@@ -432,12 +452,21 @@ function validateTitleSlug(slug: string): boolean {
   return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug);
 }
 
+function deriveTitleSlug(displayName: string): string {
+  return displayName
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-");
+}
+
 function isPublicCatalogTitle(title: TitleRow): boolean {
-  return title.visibility === "listed" && (title.lifecycle_status === "testing" || title.lifecycle_status === "published");
+  return title.visibility === "listed" && title.lifecycle_status === "active";
 }
 
 function isPublicCatalogDetail(title: TitleRow): boolean {
-  return title.visibility !== "private" && (title.lifecycle_status === "testing" || title.lifecycle_status === "published");
+  return isPublicCatalogTitle(title);
 }
 
 function mapStudioLink(row: StudioLinkRow): StudioLink {
@@ -505,7 +534,6 @@ function mapTitleRelease(row: TitleReleaseRow): TitleRelease {
     id: row.id,
     version: row.version,
     status: row.status,
-    metadataRevisionNumber: row.metadata_revision_number,
     acquisitionUrl: row.acquisition_url,
     isCurrent: row.is_current,
     publishedAt: row.published_at,
@@ -514,8 +542,8 @@ function mapTitleRelease(row: TitleReleaseRow): TitleRelease {
   };
 }
 
-function buildAcquisition(row: TitleRow): PublicTitleAcquisition | undefined {
-  if (!row.acquisition_url) {
+function buildAcquisition(row: TitleRow, options: { allowUnavailable?: boolean } = {}): PublicTitleAcquisition | undefined {
+  if (!row.acquisition_url || (!options.allowUnavailable && !isPublicCatalogDetail(row))) {
     return undefined;
   }
 
@@ -550,7 +578,7 @@ function buildCatalogSummary(title: TitleRow, studio: StudioRow, mediaRows: Titl
     ageDisplay: buildAgeDisplay(title.age_rating_authority, title.age_rating_value),
     cardImageUrl,
     logoImageUrl,
-    acquisitionUrl: title.acquisition_url
+    acquisitionUrl: isPublicCatalogDetail(title) ? title.acquisition_url : null
   };
 }
 
@@ -560,12 +588,11 @@ function buildCatalogDetail(title: TitleRow, studio: StudioRow, mediaRows: Title
     description: title.description,
     mediaAssets: mediaRows.map(mapTitleMediaAsset),
     currentRelease:
-      title.current_release_id && title.current_release_version && title.current_release_published_at
+      title.current_release_id && title.current_release_version
         ? {
             id: title.current_release_id,
             version: title.current_release_version,
-            metadataRevisionNumber: title.current_metadata_revision,
-            publishedAt: title.current_release_published_at
+            publishedAt: title.current_release_published_at ?? title.updated_at
           }
         : undefined,
     acquisition: buildAcquisition(title),
@@ -600,15 +627,14 @@ function buildDeveloperTitle(title: TitleRow, studio: StudioRow, mediaRows: Titl
     acquisitionUrl: title.acquisition_url,
     mediaAssets: mediaRows.map(mapTitleMediaAsset),
     currentRelease:
-      title.current_release_id && title.current_release_version && title.current_release_published_at
+      title.current_release_id && title.current_release_version
         ? {
             id: title.current_release_id,
             version: title.current_release_version,
-            metadataRevisionNumber: title.current_metadata_revision,
-            publishedAt: title.current_release_published_at
+            publishedAt: title.current_release_published_at ?? title.updated_at
           }
         : undefined,
-    acquisition: buildAcquisition(title),
+    acquisition: buildAcquisition(title, { allowUnavailable: true }),
     currentReleaseId: title.current_release_id,
     createdAt: title.created_at,
     updatedAt: title.updated_at
@@ -797,6 +823,15 @@ function createServiceClient(context: WorkerAppContext): SupabaseClient {
   });
 }
 
+function createAuthVerificationClient(context: WorkerAppContext): SupabaseClient {
+  return createClient(context.supabaseUrl, context.supabasePublishableKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false
+    }
+  });
+}
+
 function parseContext(env: Env): WorkerAppContext {
   const supabaseUrl = (env.SUPABASE_URL ?? "").trim();
   const supabasePublishableKey = (env.SUPABASE_PUBLISHABLE_KEY ?? "").trim();
@@ -864,10 +899,12 @@ interface ReportSupportIssueOptions {
 export class WorkerAppService {
   private readonly context: WorkerAppContext;
   private readonly client: SupabaseClient;
+  private readonly authVerificationClient: SupabaseClient;
 
   constructor(env: Env) {
     this.context = parseContext(env);
     this.client = createServiceClient(this.context);
+    this.authVerificationClient = createAuthVerificationClient(this.context);
   }
 
   getContext(): WorkerAppContext {
@@ -1051,7 +1088,8 @@ export class WorkerAppService {
       email: user.appUser.email,
       emailVerified: user.appUser.email_verified,
       identityProvider: user.appUser.identity_provider,
-      roles: user.roles
+      roles: user.roles,
+      avatarUrl: user.appUser.avatar_url
     };
   }
 
@@ -1323,6 +1361,18 @@ export class WorkerAppService {
     };
   }
 
+  async verifyCurrentUserPassword(token: string, input: VerifyCurrentUserPasswordRequest): Promise<VerifyCurrentUserPasswordResponse> {
+    const user = await this.requireUser(token);
+    if (!input.currentPassword?.trim()) {
+      throw validationProblem({
+        currentPassword: ["Current password is required."],
+      });
+    }
+
+    await this.verifyCurrentUserPasswordValue(user.appUser.auth_user_id, user.appUser.email, input.currentPassword);
+    return { verified: true };
+  }
+
   async enrollCurrentUserAsDeveloper(token: string): Promise<DeveloperEnrollmentResponse> {
     const user = await this.requireUser(token);
     const alreadyEnrolled = user.roles.includes("developer");
@@ -1459,7 +1509,7 @@ export class WorkerAppService {
     }
 
     return {
-      report: await this.buildTitleReportDetail(report)
+      report: await this.buildTitleReportDetail(report, "player")
     };
   }
 
@@ -1499,7 +1549,7 @@ export class WorkerAppService {
 
     await this.createPlayerReportReplyNotifications(report, input.message.trim(), user.appUser);
     return {
-      report: await this.buildTitleReportDetail(await this.getTitleReportById(report.id))
+      report: await this.buildTitleReportDetail(await this.getTitleReportById(report.id), "player")
     };
   }
 
@@ -1599,7 +1649,7 @@ export class WorkerAppService {
     this.assertModerator(user.roles);
 
     return {
-      report: await this.buildTitleReportDetail(await this.getTitleReportById(reportId))
+      report: await this.buildTitleReportDetail(await this.getTitleReportById(reportId), "moderator")
     };
   }
 
@@ -1648,7 +1698,7 @@ export class WorkerAppService {
 
     await this.createModerationReportMessageNotifications(report, input.message.trim(), input.recipientRole, user.appUser);
     return {
-      report: await this.buildTitleReportDetail(await this.getTitleReportById(report.id))
+      report: await this.buildTitleReportDetail(await this.getTitleReportById(report.id), "moderator")
     };
   }
 
@@ -1680,7 +1730,7 @@ export class WorkerAppService {
 
     await this.createModerationDecisionNotifications(report, validate, input.note?.trim() ?? null, user.appUser);
     return {
-      report: await this.buildTitleReportDetail(await this.getTitleReportById(report.id))
+      report: await this.buildTitleReportDetail(await this.getTitleReportById(report.id), "moderator")
     };
   }
 
@@ -1968,7 +2018,8 @@ export class WorkerAppService {
     await this.requireStudioAccess(user.appUser.id, studio.id);
     this.validateCreateDeveloperTitle(input);
 
-    const existing = await this.findTitleByStudioAndSlug(studio.id, input.slug);
+    const nextSlug = deriveTitleSlug(input.metadata.displayName);
+    const existing = await this.findTitleByStudioAndSlug(studio.id, nextSlug);
     if (existing) {
       throw problem(409, "title_slug_conflict", "Title already exists.", "The supplied title slug is already in use for this studio.");
     }
@@ -1987,10 +2038,10 @@ export class WorkerAppService {
       .from("titles")
       .insert({
         studio_id: studio.id,
-        slug: input.slug,
+        slug: nextSlug,
         content_kind: input.contentKind,
-        lifecycle_status: input.lifecycleStatus,
-        visibility: input.lifecycleStatus === "draft" ? "private" : input.visibility,
+        lifecycle_status: "draft",
+        visibility: "unlisted",
         is_reported: false,
         current_metadata_revision: 1,
         display_name: metadata.displayName,
@@ -2056,19 +2107,15 @@ export class WorkerAppService {
     const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
     this.validateUpdateDeveloperTitle(input);
 
-    const existing = await this.findTitleByStudioAndSlug(title.studio_id, input.slug);
-    if (existing && existing.id !== title.id) {
-      throw problem(409, "title_slug_conflict", "Title already exists.", "The supplied title slug is already in use for this studio.");
+    if (title.lifecycle_status !== "active" && input.visibility === "listed") {
+      throw problem(409, "title_visibility_not_allowed", "Title visibility cannot be listed.", "Only active titles can be listed.");
     }
 
-    const nextVisibility =
-      input.lifecycleStatus === "draft" || input.lifecycleStatus === "archived" ? "private" : input.visibility;
+    const nextVisibility = title.lifecycle_status === "active" ? input.visibility : "unlisted";
     const { error } = await this.client
       .from("titles")
       .update({
-        slug: input.slug,
         content_kind: input.contentKind,
-        lifecycle_status: input.lifecycleStatus,
         visibility: nextVisibility,
         updated_at: new Date().toISOString()
       })
@@ -2082,14 +2129,117 @@ export class WorkerAppService {
     };
   }
 
+  async activateTitle(token: string, titleId: string): Promise<DeveloperTitleResponse> {
+    const user = await this.requireUser(token);
+    const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
+    if (title.lifecycle_status === "active") {
+      return {
+        title: await this.getDeveloperTitleDetails(user.appUser.id, title.id)
+      };
+    }
+
+    const releases = await this.getTitleReleaseRows(title.id);
+    if (releases.length === 0) {
+      throw problem(409, "title_release_required", "Title cannot be activated.", "Create at least one release before activating this title.");
+    }
+
+    const { error } = await this.client
+      .from("titles")
+      .update({
+        lifecycle_status: "active",
+        visibility: title.lifecycle_status === "draft" ? "listed" : "unlisted",
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", title.id);
+    if (error) {
+      throw problem(500, "title_activate_failed", "Title activation failed.", error.message);
+    }
+
+    return {
+      title: await this.getDeveloperTitleDetails(user.appUser.id, title.id)
+    };
+  }
+
+  async archiveTitle(token: string, titleId: string): Promise<DeveloperTitleResponse> {
+    const user = await this.requireUser(token);
+    const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
+    if (title.lifecycle_status === "archived" && title.visibility === "unlisted") {
+      return {
+        title: await this.getDeveloperTitleDetails(user.appUser.id, title.id)
+      };
+    }
+
+    const { error } = await this.client
+      .from("titles")
+      .update({
+        lifecycle_status: "archived",
+        visibility: "unlisted",
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", title.id);
+    if (error) {
+      throw problem(500, "title_archive_failed", "Title archive failed.", error.message);
+    }
+
+    return {
+      title: await this.getDeveloperTitleDetails(user.appUser.id, title.id)
+    };
+  }
+
+  async unarchiveTitle(token: string, titleId: string): Promise<DeveloperTitleResponse> {
+    const user = await this.requireUser(token);
+    const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
+    if (title.lifecycle_status !== "archived" && title.visibility === "unlisted") {
+      return {
+        title: await this.getDeveloperTitleDetails(user.appUser.id, title.id)
+      };
+    }
+
+    const { error } = await this.client
+      .from("titles")
+      .update({
+        lifecycle_status: "draft",
+        visibility: "unlisted",
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", title.id);
+    if (error) {
+      throw problem(500, "title_unarchive_failed", "Title could not be unarchived.", error.message);
+    }
+
+    return {
+      title: await this.getDeveloperTitleDetails(user.appUser.id, title.id)
+    };
+  }
+
+  async deleteTitle(token: string, titleId: string, input: DeleteDeveloperTitleRequest): Promise<void> {
+    const user = await this.requireUser(token);
+    const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
+    this.validateDeleteDeveloperTitle(input, title.display_name);
+    await this.verifyCurrentUserPasswordValue(user.appUser.auth_user_id, user.appUser.email, input.currentPassword);
+
+    const { error } = await this.client.from("titles").delete().eq("id", title.id);
+    if (error) {
+      throw problem(500, "title_delete_failed", "Title delete failed.", error.message);
+    }
+
+    const { data: remainingRows, error: verificationError } = await this.client.from("titles").select("id").eq("id", title.id).limit(1);
+    if (verificationError) {
+      throw problem(500, "title_delete_verification_failed", "Title delete verification failed.", verificationError.message);
+    }
+    if ((remainingRows as Array<{ id: string }> | null | undefined)?.length) {
+      throw problem(500, "title_delete_failed", "Title delete failed.", "The title still exists after the delete request completed.");
+    }
+  }
+
   async upsertTitleMetadata(token: string, titleId: string, input: UpsertTitleMetadataRequest): Promise<DeveloperTitleResponse> {
     const user = await this.requireUser(token);
     const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
     this.validateTitleMetadataInput(input);
 
     const currentVersion = await this.getCurrentTitleMetadataVersionRow(title.id);
+    const currentGenreSlugs = await this.getGenreSlugsForMetadataVersion(title.id, currentVersion.revision_number);
     const now = new Date().toISOString();
-    let nextRevisionNumber = currentVersion.revision_number;
     const genreRows = await this.requireGenres(input.genreSlugs);
     const genreDisplay = buildGenreDisplayFromRows(input.genreSlugs, genreRows);
     const ageRatingAuthority = await this.getAgeRatingAuthorityByCode(input.ageRatingAuthority);
@@ -2098,62 +2248,46 @@ export class WorkerAppService {
         ageRatingAuthority: [`Unknown age rating authority: ${input.ageRatingAuthority}.`]
       });
     }
+    await this.ensureDerivedTitleSlugAvailable(title, input.displayName);
 
-    if (currentVersion.is_frozen) {
-      nextRevisionNumber = (await this.getHighestMetadataRevisionNumber(title.id)) + 1;
-
-      const { error: demoteError } = await this.client
-        .from("title_metadata_versions")
-        .update({ is_current: false })
-        .eq("title_id", title.id)
-        .eq("is_current", true);
-      if (demoteError) {
-        throw problem(500, "title_metadata_update_failed", "Title metadata update failed.", demoteError.message);
-      }
-
-      const { error: insertError } = await this.client.from("title_metadata_versions").insert({
-        title_id: title.id,
-        revision_number: nextRevisionNumber,
-        is_current: true,
-        is_frozen: false,
-        display_name: input.displayName,
-        short_description: input.shortDescription,
-        description: input.description,
-        genre_display: genreDisplay,
-        min_players: input.minPlayers,
-        max_players: input.maxPlayers,
-        age_rating_authority: ageRatingAuthority.code,
-        age_rating_value: input.ageRatingValue,
-        min_age_years: input.minAgeYears,
-        created_at: now,
-        updated_at: now
-      });
-      if (insertError) {
-        throw problem(500, "title_metadata_update_failed", "Title metadata update failed.", insertError.message);
-      }
-      await this.replaceTitleMetadataVersionGenres(title.id, nextRevisionNumber, input.genreSlugs);
-    } else {
-      const { error: updateError } = await this.client
-        .from("title_metadata_versions")
-        .update({
-          display_name: input.displayName,
-          short_description: input.shortDescription,
-          description: input.description,
-          genre_display: genreDisplay,
-          min_players: input.minPlayers,
-          max_players: input.maxPlayers,
-          age_rating_authority: ageRatingAuthority.code,
-          age_rating_value: input.ageRatingValue,
-          min_age_years: input.minAgeYears,
-          updated_at: now
-        })
-        .eq("title_id", title.id)
-        .eq("revision_number", currentVersion.revision_number);
-      if (updateError) {
-        throw problem(500, "title_metadata_update_failed", "Title metadata update failed.", updateError.message);
-      }
-      await this.replaceTitleMetadataVersionGenres(title.id, currentVersion.revision_number, input.genreSlugs);
+    if (this.titleMetadataMatchesCurrentVersion(currentVersion, currentGenreSlugs, input, genreDisplay, ageRatingAuthority.code)) {
+      return {
+        title: await this.getDeveloperTitleDetails(user.appUser.id, title.id)
+      };
     }
+
+    const nextRevisionNumber = (await this.getHighestMetadataRevisionNumber(title.id)) + 1;
+
+    const { error: demoteError } = await this.client
+      .from("title_metadata_versions")
+      .update({ is_current: false })
+      .eq("title_id", title.id)
+      .eq("is_current", true);
+    if (demoteError) {
+      throw problem(500, "title_metadata_update_failed", "Title metadata update failed.", demoteError.message);
+    }
+
+    const { error: insertError } = await this.client.from("title_metadata_versions").insert({
+      title_id: title.id,
+      revision_number: nextRevisionNumber,
+      is_current: true,
+      is_frozen: false,
+      display_name: input.displayName,
+      short_description: input.shortDescription,
+      description: input.description,
+      genre_display: genreDisplay,
+      min_players: input.minPlayers,
+      max_players: input.maxPlayers,
+      age_rating_authority: ageRatingAuthority.code,
+      age_rating_value: input.ageRatingValue,
+      min_age_years: input.minAgeYears,
+      created_at: now,
+      updated_at: now
+    });
+    if (insertError) {
+      throw problem(500, "title_metadata_update_failed", "Title metadata update failed.", insertError.message);
+    }
+    await this.replaceTitleMetadataVersionGenres(title.id, nextRevisionNumber, input.genreSlugs);
 
     const nextCurrentVersion = await this.getTitleMetadataVersionRow(title.id, nextRevisionNumber);
     await this.syncTitleFromMetadataVersion(title.id, nextCurrentVersion);
@@ -2179,6 +2313,7 @@ export class WorkerAppService {
     const user = await this.requireUser(token);
     const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
     const version = await this.getTitleMetadataVersionRow(title.id, revisionNumber);
+    await this.ensureDerivedTitleSlugAvailable(title, version.display_name);
 
     const { error: clearError } = await this.client.from("title_metadata_versions").update({ is_current: false }).eq("title_id", title.id);
     if (clearError) {
@@ -2311,7 +2446,7 @@ export class WorkerAppService {
     }
 
     return {
-      report: await this.buildTitleReportDetail(report)
+      report: await this.buildTitleReportDetail(report, "developer")
     };
   }
 
@@ -2357,7 +2492,7 @@ export class WorkerAppService {
 
     await this.createDeveloperReportReplyNotifications(report, input.message.trim(), user.appUser);
     return {
-      report: await this.buildTitleReportDetail(await this.getTitleReportById(report.id))
+      report: await this.buildTitleReportDetail(await this.getTitleReportById(report.id), "developer")
     };
   }
 
@@ -2375,7 +2510,6 @@ export class WorkerAppService {
     const user = await this.requireUser(token);
     const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
     this.validateTitleReleaseInput(input);
-    await this.getTitleMetadataVersionRow(title.id, input.metadataRevisionNumber);
     const now = new Date().toISOString();
 
     const { data, error } = await this.client
@@ -2383,11 +2517,10 @@ export class WorkerAppService {
       .insert({
         title_id: title.id,
         version: input.version,
-        status: "draft",
-        metadata_revision_number: input.metadataRevisionNumber,
+        status: input.status,
         acquisition_url: input.acquisitionUrl?.trim() ? input.acquisitionUrl.trim() : null,
         is_current: false,
-        published_at: null,
+        published_at: now,
         created_at: now,
         updated_at: now
       })
@@ -2411,18 +2544,14 @@ export class WorkerAppService {
     const user = await this.requireUser(token);
     const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
     this.validateTitleReleaseInput(input);
-    await this.getTitleMetadataVersionRow(title.id, input.metadataRevisionNumber);
     const release = await this.requireTitleRelease(title.id, releaseId);
-    if (release.status === "withdrawn") {
-      throw problem(409, "title_release_withdrawn", "Release cannot be edited.", "Withdrawn releases cannot be updated.");
-    }
 
     const now = new Date().toISOString();
     const { data, error } = await this.client
       .from("title_releases")
       .update({
         version: input.version,
-        metadata_revision_number: input.metadataRevisionNumber,
+        status: input.status,
         acquisition_url: input.acquisitionUrl?.trim() ? input.acquisitionUrl.trim() : null,
         updated_at: now
       })
@@ -2443,53 +2572,10 @@ export class WorkerAppService {
     };
   }
 
-  async publishTitleRelease(token: string, titleId: string, releaseId: string): Promise<TitleReleaseResponse> {
-    const user = await this.requireUser(token);
-    const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
-    const release = await this.requireTitleRelease(title.id, releaseId);
-    if (release.status !== "draft") {
-      throw problem(409, "title_release_not_draft", "Release cannot be published.", "Only draft releases can be published.");
-    }
-    if (!release.acquisition_url?.trim()) {
-      throw problem(409, "title_release_acquisition_required", "Release cannot be published.", "A release acquisition URL is required before publishing.");
-    }
-
-    const now = new Date().toISOString();
-    const { data, error } = await this.client
-      .from("title_releases")
-      .update({
-        status: "published",
-        published_at: now,
-        updated_at: now
-      })
-      .eq("id", release.id)
-      .select("*")
-      .single();
-    if (error) {
-      throw problem(500, "title_release_publish_failed", "Title release publish failed.", error.message);
-    }
-
-    const { error: metadataError } = await this.client
-      .from("title_metadata_versions")
-      .update({ is_frozen: true, updated_at: now })
-      .eq("title_id", title.id)
-      .eq("revision_number", release.metadata_revision_number);
-    if (metadataError) {
-      throw problem(500, "title_release_publish_failed", "Title release publish failed.", metadataError.message);
-    }
-
-    return {
-      release: mapTitleRelease(data as unknown as TitleReleaseRow)
-    };
-  }
-
   async activateTitleRelease(token: string, titleId: string, releaseId: string): Promise<DeveloperTitleResponse> {
     const user = await this.requireUser(token);
     const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
     const release = await this.requireTitleRelease(title.id, releaseId);
-    if (release.status !== "published") {
-      throw problem(409, "title_release_not_published", "Release cannot be activated.", "Only published releases can be activated.");
-    }
 
     const now = new Date().toISOString();
     const { error: clearError } = await this.client.from("title_releases").update({ is_current: false }).eq("title_id", title.id);
@@ -2510,7 +2596,7 @@ export class WorkerAppService {
       .update({
         current_release_id: release.id,
         current_release_version: release.version,
-        current_release_published_at: release.published_at,
+        current_release_published_at: release.published_at ?? release.updated_at,
         acquisition_url: release.acquisition_url,
         updated_at: now
       })
@@ -2521,52 +2607,6 @@ export class WorkerAppService {
 
     return {
       title: await this.getDeveloperTitleDetails(user.appUser.id, title.id)
-    };
-  }
-
-  async withdrawTitleRelease(token: string, titleId: string, releaseId: string): Promise<TitleReleaseResponse> {
-    const user = await this.requireUser(token);
-    const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
-    const release = await this.requireTitleRelease(title.id, releaseId);
-    if (release.status === "withdrawn") {
-      return {
-        release: mapTitleRelease(release)
-      };
-    }
-
-    const now = new Date().toISOString();
-    const { data, error } = await this.client
-      .from("title_releases")
-      .update({
-        status: "withdrawn",
-        is_current: false,
-        updated_at: now
-      })
-      .eq("id", release.id)
-      .select("*")
-      .single();
-    if (error) {
-      throw problem(500, "title_release_withdraw_failed", "Title release withdraw failed.", error.message);
-    }
-
-    if (title.current_release_id === release.id) {
-      const { error: titleUpdateError } = await this.client
-        .from("titles")
-        .update({
-          current_release_id: null,
-          current_release_version: null,
-          current_release_published_at: null,
-          acquisition_url: null,
-          updated_at: now
-        })
-        .eq("id", title.id);
-      if (titleUpdateError) {
-        throw problem(500, "title_release_withdraw_failed", "Title release withdraw failed.", titleUpdateError.message);
-      }
-    }
-
-    return {
-      release: mapTitleRelease(data as unknown as TitleReleaseRow)
     };
   }
 
@@ -2722,11 +2762,22 @@ export class WorkerAppService {
     };
   }
 
-  async getCatalogTitle(studioSlug: string, titleSlug: string): Promise<CatalogTitleResponse> {
+  async getCatalogTitle(token: string | null, studioSlug: string, titleSlug: string): Promise<CatalogTitleResponse> {
     const studio = await this.getStudioBySlug(studioSlug);
     const title = await this.getTitleByStudioAndSlug(studio.id, titleSlug);
     if (!isPublicCatalogDetail(title)) {
-      throw problem(404, "catalog_title_not_found", "Catalog title not found", "The requested title was not found.");
+      if (!token?.trim()) {
+        throw problem(404, "catalog_title_not_found", "Catalog title not found", "The requested title was not found.");
+      }
+
+      const user = await this.requireUser(token);
+      const [libraryRows, wishlistRows] = await Promise.all([
+        this.getPlayerLibraryRows(user.appUser.id, [title.id]),
+        this.getPlayerWishlistRows(user.appUser.id, [title.id]),
+      ]);
+      if (libraryRows.length === 0 && wishlistRows.length === 0) {
+        throw problem(404, "catalog_title_not_found", "Catalog title not found", "The requested title was not found.");
+      }
     }
 
     const mediaByTitleId = await this.getTitleMediaByTitleIds([title.id]);
@@ -2763,7 +2814,7 @@ export class WorkerAppService {
 
     const existing = (appUserRows as AppUserRow[])[0];
     if (existing) {
-      return existing;
+      return this.syncProjectedUserFromAuth(existing, authUser);
     }
 
     const metadata = (authUser.user_metadata ?? {}) as Record<string, unknown>;
@@ -2811,6 +2862,42 @@ export class WorkerAppService {
     }
 
     return inserted as unknown as AppUserRow;
+  }
+
+  private async syncProjectedUserFromAuth(existing: AppUserRow, authUser: SupabaseAuthUser): Promise<AppUserRow> {
+    const email = typeof authUser.email === "string" && authUser.email.trim().length > 0 ? normalizeEmailAddress(authUser.email) : null;
+    const emailVerified = Boolean(authUser.email_confirmed_at);
+    const provider =
+      typeof authUser.app_metadata?.provider === "string"
+        ? authUser.app_metadata.provider
+        : Array.isArray(authUser.identities) && typeof authUser.identities[0]?.provider === "string"
+          ? authUser.identities[0].provider
+          : existing.identity_provider ?? "email";
+
+    if (existing.email === email && existing.email_verified === emailVerified && existing.identity_provider === provider) {
+      return existing;
+    }
+
+    const updates: Partial<AppUserRow> = {
+      email,
+      email_verified: emailVerified,
+      identity_provider: provider,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { error } = await this.client
+      .from("app_users")
+      .update(updates)
+      .eq("id", existing.id);
+
+    if (error) {
+      throw problem(500, "identity_projection_update_failed", "Identity lookup failed.", error.message);
+    }
+
+    return {
+      ...existing,
+      ...updates,
+    };
   }
 
   private async reserveProjectedUserName(requestedValue: string): Promise<string> {
@@ -3027,20 +3114,11 @@ export class WorkerAppService {
 
   private validateCreateDeveloperTitle(input: CreateDeveloperTitleRequest): void {
     const errors: Record<string, string[]> = {};
-    if (!validateTitleSlug(input.slug)) {
-      errors.slug = ["Slug must contain only lowercase letters, numbers, and single hyphen separators."];
-    }
     if (input.contentKind !== "game" && input.contentKind !== "app") {
       errors.contentKind = ["Content kind must be either game or app."];
     }
-    if (!["draft", "testing", "published", "archived"].includes(input.lifecycleStatus)) {
-      errors.lifecycleStatus = ["Lifecycle status is invalid."];
-    }
-    if (!["private", "unlisted", "listed"].includes(input.visibility)) {
-      errors.visibility = ["Visibility is invalid."];
-    }
-    if (input.lifecycleStatus === "draft" && input.visibility !== "private") {
-      errors.visibility = ["Draft titles must remain private."];
+    if (!deriveTitleSlug(input.metadata.displayName)) {
+      errors.displayName = ["Display name must contain at least one letter or number."];
     }
     Object.assign(errors, this.collectTitleMetadataErrors(input.metadata));
     if (Object.keys(errors).length > 0) {
@@ -3050,17 +3128,26 @@ export class WorkerAppService {
 
   private validateUpdateDeveloperTitle(input: UpdateDeveloperTitleRequest): void {
     const errors: Record<string, string[]> = {};
-    if (!validateTitleSlug(input.slug)) {
-      errors.slug = ["Slug must contain only lowercase letters, numbers, and single hyphen separators."];
-    }
     if (input.contentKind !== "game" && input.contentKind !== "app") {
       errors.contentKind = ["Content kind must be either game or app."];
     }
-    if (!["draft", "testing", "published", "archived"].includes(input.lifecycleStatus)) {
-      errors.lifecycleStatus = ["Lifecycle status is invalid."];
-    }
-    if (!["private", "unlisted", "listed"].includes(input.visibility)) {
+    if (!["unlisted", "listed"].includes(input.visibility)) {
       errors.visibility = ["Visibility is invalid."];
+    }
+    if (Object.keys(errors).length > 0) {
+      throw validationProblem(errors);
+    }
+  }
+
+  private validateDeleteDeveloperTitle(input: DeleteDeveloperTitleRequest, displayName: string): void {
+    const errors: Record<string, string[]> = {};
+    if (!input.currentPassword?.trim()) {
+      errors.currentPassword = ["Current password is required."];
+    }
+    if (!input.confirmationTitleName?.trim()) {
+      errors.confirmationTitleName = ["Type the title name exactly to confirm deletion."];
+    } else if (input.confirmationTitleName.trim() !== displayName) {
+      errors.confirmationTitleName = ["The title name does not match this title."];
     }
     if (Object.keys(errors).length > 0) {
       throw validationProblem(errors);
@@ -3137,8 +3224,8 @@ export class WorkerAppService {
     if (!input.version?.trim()) {
       errors.version = ["Release version is required."];
     }
-    if (input.metadataRevisionNumber < 1) {
-      errors.metadataRevisionNumber = ["Metadata revision number must be at least 1."];
+    if (input.status !== "testing" && input.status !== "production") {
+      errors.status = ["Release type must be either testing or production."];
     }
     if (input.acquisitionUrl?.trim() && !isAbsoluteUrl(input.acquisitionUrl)) {
       errors.acquisitionUrl = ["Acquisition URL must be an absolute URI when supplied."];
@@ -3361,10 +3448,62 @@ export class WorkerAppService {
     return row;
   }
 
+  private async ensureDerivedTitleSlugAvailable(title: TitleRow, displayName: string): Promise<void> {
+    const nextSlug = deriveTitleSlug(displayName);
+    if (!validateTitleSlug(nextSlug)) {
+      throw validationProblem({
+        displayName: ["Display name must contain at least one letter or number."]
+      });
+    }
+
+    const existing = await this.findTitleByStudioAndSlug(title.studio_id, nextSlug);
+    if (existing && existing.id !== title.id) {
+      throw problem(409, "title_slug_conflict", "Title already exists.", "The derived title slug is already in use for this studio.");
+    }
+  }
+
+  private titleMetadataMatchesCurrentVersion(
+    currentVersion: TitleMetadataVersionRow,
+    currentGenreSlugs: readonly string[],
+    input: UpsertTitleMetadataRequest,
+    genreDisplay: string,
+    ageRatingAuthorityCode: string,
+  ): boolean {
+    const normalizedCurrentGenres = currentGenreSlugs.map((genreSlug) => normalizeGenreSlug(genreSlug)).filter(Boolean);
+    const normalizedNextGenres = input.genreSlugs.map((genreSlug) => normalizeGenreSlug(genreSlug)).filter(Boolean);
+    return (
+      currentVersion.display_name === input.displayName &&
+      currentVersion.short_description === input.shortDescription &&
+      currentVersion.description === input.description &&
+      currentVersion.genre_display === genreDisplay &&
+      normalizedCurrentGenres.length === normalizedNextGenres.length &&
+      normalizedCurrentGenres.every((genreSlug, index) => genreSlug === normalizedNextGenres[index]) &&
+      currentVersion.min_players === input.minPlayers &&
+      currentVersion.max_players === input.maxPlayers &&
+      currentVersion.age_rating_authority === ageRatingAuthorityCode &&
+      currentVersion.age_rating_value === input.ageRatingValue &&
+      currentVersion.min_age_years === input.minAgeYears
+    );
+  }
+
   private async syncTitleFromMetadataVersion(titleId: string, version: TitleMetadataVersionRow): Promise<void> {
+    const title = await this.getTitleById(titleId);
+    const nextSlug = deriveTitleSlug(version.display_name);
+    if (!validateTitleSlug(nextSlug)) {
+      throw validationProblem({
+        displayName: ["Display name must contain at least one letter or number."]
+      });
+    }
+
+    const existing = await this.findTitleByStudioAndSlug(title.studio_id, nextSlug);
+    if (existing && existing.id !== title.id) {
+      throw problem(409, "title_slug_conflict", "Title already exists.", "The derived title slug is already in use for this studio.");
+    }
+
     const { error } = await this.client
       .from("titles")
       .update({
+        slug: nextSlug,
         current_metadata_revision: version.revision_number,
         display_name: version.display_name,
         short_description: version.short_description,
@@ -3449,13 +3588,29 @@ export class WorkerAppService {
     if (release.is_current) {
       updates.current_release_id = release.id;
       updates.current_release_version = release.version;
-      updates.current_release_published_at = release.published_at;
+      updates.current_release_published_at = release.published_at ?? release.updated_at;
       updates.acquisition_url = release.acquisition_url;
     }
 
     const { error } = await this.client.from("titles").update(updates).eq("id", titleId);
     if (error) {
       throw problem(500, "title_sync_failed", "Title projection sync failed.", error.message);
+    }
+  }
+
+  private async verifyCurrentUserPasswordValue(authUserId: string, email: string | null, password: string): Promise<void> {
+    if (!email) {
+      throw problem(409, "password_confirmation_unavailable", "Password confirmation is unavailable.", "This account does not have an email address available for password confirmation.");
+    }
+
+    const { data, error } = await this.authVerificationClient.auth.signInWithPassword({
+      email,
+      password,
+    });
+    if (error || !data.user?.id || data.user.id !== authUserId) {
+      throw validationProblem({
+        currentPassword: ["Current password is incorrect."]
+      });
     }
   }
 
@@ -3842,7 +3997,7 @@ export class WorkerAppService {
     return rows
       .map((row) => {
         const title = titleById.get(row.title_id);
-        if (!title || !isPublicCatalogDetail(title)) {
+        if (!title) {
           return null;
         }
 
@@ -3863,7 +4018,7 @@ export class WorkerAppService {
     kind: "library" | "wishlist"
   ): Promise<PlayerCollectionMutationResponse> {
     const title = await this.getTitleById(titleId);
-    if (!isPublicCatalogDetail(title)) {
+    if (included && !isPublicCatalogDetail(title)) {
       throw problem(404, "catalog_title_not_found", "Catalog title not found", "The requested title was not found.");
     }
 
@@ -4118,13 +4273,15 @@ export class WorkerAppService {
     return summaries.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
-  private async buildTitleReportDetail(report: TitleReportRow): Promise<TitleReportDetail> {
+  private async buildTitleReportDetail(report: TitleReportRow, viewerRole: TitleReportViewerRole): Promise<TitleReportDetail> {
     const summary = (await this.buildTitleReportSummaries([report]))[0];
     if (!summary) {
       throw problem(404, "title_report_not_found", "Title report not found.", "The requested title report was not found.");
     }
 
-    const messages = await this.getTitleReportMessages(report.id);
+    const messages = (await this.getTitleReportMessages(report.id)).filter((message) =>
+      canViewerAccessTitleReportMessageAudience(message.audience, viewerRole),
+    );
     const actorUserIds = Array.from(
       new Set(messages.map((message) => message.author_user_id).concat(report.resolved_by_user_id ? [report.resolved_by_user_id] : []))
     );

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { WorkerAppService } from "./service-boundary";
+import { createClient } from "@supabase/supabase-js";
+import { canViewerAccessTitleReportMessageAudience, WorkerAppService } from "./service-boundary";
 
 type MarketingContactRow = {
   id: string;
@@ -31,18 +32,61 @@ type RoleInterestRow = {
   created_at: string;
 };
 
+type AppUserRow = {
+  id: string;
+  auth_user_id: string;
+  user_name: string;
+  display_name: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  email: string | null;
+  email_verified: boolean;
+  identity_provider: string | null;
+  avatar_url: string | null;
+  avatar_storage_path?: string | null;
+  updated_at: string;
+};
+
+type AppUserRoleRow = {
+  user_id: string;
+  role: "player" | "developer" | "verified_developer" | "moderator" | "admin" | "super_admin";
+};
+
+type TitleRow = {
+  id: string;
+  lifecycle_status: "draft" | "active" | "archived";
+  visibility: "unlisted" | "listed";
+  updated_at: string;
+};
+
 const tables: {
   marketing_contacts: MarketingContactRow[];
   marketing_contact_role_interests: RoleInterestRow[];
+  app_users: AppUserRow[];
+  app_user_roles: AppUserRoleRow[];
+  titles: TitleRow[];
 } = {
   marketing_contacts: [],
   marketing_contact_role_interests: [],
+  app_users: [],
+  app_user_roles: [],
+  titles: [],
 };
 
 function resetTables() {
   tables.marketing_contacts = [];
   tables.marketing_contact_role_interests = [];
+  tables.app_users = [];
+  tables.app_user_roles = [];
+  tables.titles = [];
 }
+
+const supabaseAuthMocks = vi.hoisted(() => ({
+  getUser: vi.fn(),
+  updateUserById: vi.fn(),
+  listUsers: vi.fn(),
+  signInWithPassword: vi.fn(),
+}));
 
 function createQueryBuilder(tableName: keyof typeof tables) {
   let filters: Array<{ column: string; value: unknown }> = [];
@@ -126,6 +170,14 @@ vi.mock("@supabase/supabase-js", () => ({
     from(tableName: keyof typeof tables) {
       return createQueryBuilder(tableName);
     },
+    auth: {
+      getUser: supabaseAuthMocks.getUser,
+      signInWithPassword: supabaseAuthMocks.signInWithPassword,
+      admin: {
+        updateUserById: supabaseAuthMocks.updateUserById,
+        listUsers: supabaseAuthMocks.listUsers,
+      },
+    },
   })),
 }));
 
@@ -133,6 +185,10 @@ describe("WorkerAppService.createMarketingSignup", () => {
   beforeEach(() => {
     resetTables();
     vi.restoreAllMocks();
+    supabaseAuthMocks.getUser.mockReset();
+    supabaseAuthMocks.updateUserById.mockReset();
+    supabaseAuthMocks.listUsers.mockReset();
+    supabaseAuthMocks.signInWithPassword.mockReset();
   });
 
   it("stores waitlisted lifecycle state, role interests, and Brevo attributes for a new signup", async () => {
@@ -466,6 +522,328 @@ describe("WorkerAppService.createMarketingSignup", () => {
     ).resolves.toEqual({ accepted: true });
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("WorkerAppService.getCurrentUserResponse", () => {
+  beforeEach(() => {
+    resetTables();
+    vi.restoreAllMocks();
+    supabaseAuthMocks.getUser.mockReset();
+    supabaseAuthMocks.updateUserById.mockReset();
+    supabaseAuthMocks.listUsers.mockReset();
+    supabaseAuthMocks.signInWithPassword.mockReset();
+  });
+
+  it("includes the current user's avatar URL when present", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: {
+        id: "user-1",
+        auth_user_id: "auth-user-1",
+        user_name: "ava.garcia",
+        display_name: "Ava Garcia",
+        first_name: "Ava",
+        last_name: "Garcia",
+        email: "ava@example.com",
+        email_verified: true,
+        identity_provider: "email",
+        avatar_url: "https://cdn.example.com/avatars/ava.png",
+      },
+      roles: ["player"],
+    });
+
+    await expect(service.getCurrentUserResponse("test-token")).resolves.toEqual({
+      subject: "auth-user-1",
+      displayName: "Ava Garcia",
+      email: "ava@example.com",
+      emailVerified: true,
+      identityProvider: "email",
+      roles: ["player"],
+      avatarUrl: "https://cdn.example.com/avatars/ava.png",
+    });
+  });
+
+  it("syncs auth-owned email fields into the projected profile for existing users", async () => {
+    tables.app_users.push({
+      id: "user-1",
+      auth_user_id: "auth-user-1",
+      user_name: "ava.garcia",
+      display_name: "Ava Garcia",
+      first_name: "Ava",
+      last_name: "Garcia",
+      email: "old@example.com",
+      email_verified: true,
+      identity_provider: "email",
+      avatar_url: null,
+      avatar_storage_path: null,
+      updated_at: "2026-03-01T00:00:00Z",
+    });
+
+    supabaseAuthMocks.getUser.mockResolvedValue({
+      data: {
+        user: {
+          id: "auth-user-1",
+          email: "new@example.com",
+          email_confirmed_at: null,
+          app_metadata: { provider: "email" },
+          user_metadata: {},
+          identities: [{ provider: "email" }],
+        },
+      },
+      error: null,
+    });
+
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    await expect(service.getCurrentUserProfile("test-token")).resolves.toMatchObject({
+      profile: {
+        subject: "auth-user-1",
+        email: "new@example.com",
+        emailVerified: false,
+      },
+    });
+
+    expect(tables.app_users[0]).toMatchObject({
+      email: "new@example.com",
+      email_verified: false,
+    });
+  });
+});
+
+describe("WorkerAppService.verifyCurrentUserPassword", () => {
+  beforeEach(() => {
+    resetTables();
+    vi.restoreAllMocks();
+    supabaseAuthMocks.getUser.mockReset();
+    supabaseAuthMocks.updateUserById.mockReset();
+    supabaseAuthMocks.listUsers.mockReset();
+    supabaseAuthMocks.signInWithPassword.mockReset();
+  });
+
+  it("verifies the current password for the signed-in user", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: {
+        id: "user-1",
+        auth_user_id: "auth-user-1",
+        user_name: "emma.torres",
+        display_name: "Emma Torres",
+        first_name: "Emma",
+        last_name: "Torres",
+        email: "emma.torres@boardtpl.local",
+        email_verified: true,
+        identity_provider: "email",
+        avatar_url: null,
+      },
+      roles: ["developer"],
+    });
+
+    supabaseAuthMocks.signInWithPassword.mockResolvedValue({
+      data: { user: { id: "auth-user-1" } },
+      error: null,
+    });
+
+    await expect(service.verifyCurrentUserPassword("test-token", { currentPassword: "Developer!123" })).resolves.toEqual({
+      verified: true,
+    });
+
+    expect(supabaseAuthMocks.signInWithPassword).toHaveBeenCalledWith({
+      email: "emma.torres@boardtpl.local",
+      password: "Developer!123",
+    });
+    expect(createClient).toHaveBeenNthCalledWith(
+      2,
+      "https://example.supabase.co",
+      "publishable-key",
+      expect.objectContaining({
+        auth: expect.objectContaining({
+          autoRefreshToken: false,
+          persistSession: false,
+        }),
+      })
+    );
+  });
+});
+
+describe("WorkerAppService.unarchiveTitle", () => {
+  beforeEach(() => {
+    resetTables();
+    vi.restoreAllMocks();
+    supabaseAuthMocks.getUser.mockReset();
+    supabaseAuthMocks.updateUserById.mockReset();
+    supabaseAuthMocks.listUsers.mockReset();
+    supabaseAuthMocks.signInWithPassword.mockReset();
+  });
+
+  it("moves an archived title back to draft and keeps it unlisted", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    tables.titles.push({
+      id: "title-1",
+      lifecycle_status: "archived",
+      visibility: "unlisted",
+      updated_at: "2026-03-25T00:00:00.000Z",
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: {
+        id: "user-1",
+        auth_user_id: "auth-user-1",
+        user_name: "emma.torres",
+        display_name: "Emma Torres",
+        first_name: "Emma",
+        last_name: "Torres",
+        email: "emma.torres@boardtpl.local",
+        email_verified: true,
+        identity_provider: "email",
+        avatar_url: null,
+      },
+      roles: ["developer"],
+    });
+    vi.spyOn(service as never, "requireDeveloperTitleAccess" as never).mockResolvedValue({
+      id: "title-1",
+      lifecycle_status: "archived",
+      visibility: "unlisted",
+    });
+    vi.spyOn(service as never, "getDeveloperTitleDetails" as never).mockResolvedValue({
+      id: "title-1",
+      studioId: "studio-1",
+      studioSlug: "blue-harbor-games",
+      slug: "lantern-drift",
+      displayName: "Lantern Drift",
+      shortDescription: "A thoughtful puzzle adventure.",
+      description: "A thoughtful puzzle adventure.",
+      genreSlugs: ["adventure", "puzzle"],
+      contentKind: "game",
+      lifecycleStatus: "draft",
+      visibility: "unlisted",
+      genreDisplay: "Adventure, Puzzle",
+      minPlayers: 1,
+      maxPlayers: 4,
+      ageRatingAuthority: null,
+      ageRatingValue: null,
+      minAgeYears: null,
+      playerCountDisplay: "1-4 players",
+      ageDisplay: "Ages 10+",
+      currentMetadataRevision: 3,
+      acquisitionUrl: null,
+      currentRelease: null,
+    });
+
+    await expect(service.unarchiveTitle("test-token", "title-1")).resolves.toEqual({
+      title: expect.objectContaining({
+        id: "title-1",
+        lifecycleStatus: "draft",
+        visibility: "unlisted",
+      }),
+    });
+
+    expect(tables.titles[0]).toMatchObject({
+      id: "title-1",
+      lifecycle_status: "draft",
+      visibility: "unlisted",
+    });
+  });
+});
+
+describe("WorkerAppService.deleteTitle", () => {
+  beforeEach(() => {
+    resetTables();
+    vi.restoreAllMocks();
+    supabaseAuthMocks.getUser.mockReset();
+    supabaseAuthMocks.updateUserById.mockReset();
+    supabaseAuthMocks.listUsers.mockReset();
+    supabaseAuthMocks.signInWithPassword.mockReset();
+  });
+
+  it("removes the title row after password confirmation", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    tables.titles.push({
+      id: "title-1",
+      lifecycle_status: "draft",
+      visibility: "unlisted",
+      updated_at: "2026-03-25T00:00:00.000Z",
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: {
+        id: "user-1",
+        auth_user_id: "auth-user-1",
+        user_name: "emma.torres",
+        display_name: "Emma Torres",
+        first_name: "Emma",
+        last_name: "Torres",
+        email: "emma.torres@boardtpl.local",
+        email_verified: true,
+        identity_provider: "email",
+        avatar_url: null,
+      },
+      roles: ["developer"],
+    });
+    vi.spyOn(service as never, "requireDeveloperTitleAccess" as never).mockResolvedValue({
+      id: "title-1",
+      display_name: "Lantern Drift",
+    });
+    vi.spyOn(service as never, "verifyCurrentUserPasswordValue" as never).mockResolvedValue(undefined);
+
+    await expect(
+      service.deleteTitle("test-token", "title-1", {
+        currentPassword: "Developer!123",
+        confirmationTitleName: "Lantern Drift",
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(tables.titles).toHaveLength(0);
+  });
+});
+
+describe("canViewerAccessTitleReportMessageAudience", () => {
+  it("hides developer-only messages from players", () => {
+    expect(canViewerAccessTitleReportMessageAudience("developer", "player")).toBe(false);
+    expect(canViewerAccessTitleReportMessageAudience("all", "player")).toBe(true);
+    expect(canViewerAccessTitleReportMessageAudience("player", "player")).toBe(true);
+  });
+
+  it("hides player-only messages from developers", () => {
+    expect(canViewerAccessTitleReportMessageAudience("player", "developer")).toBe(false);
+    expect(canViewerAccessTitleReportMessageAudience("all", "developer")).toBe(true);
+    expect(canViewerAccessTitleReportMessageAudience("developer", "developer")).toBe(true);
+  });
+
+  it("keeps moderator visibility across all report audiences", () => {
+    expect(canViewerAccessTitleReportMessageAudience("all", "moderator")).toBe(true);
+    expect(canViewerAccessTitleReportMessageAudience("player", "moderator")).toBe(true);
+    expect(canViewerAccessTitleReportMessageAudience("developer", "moderator")).toBe(true);
+    expect(canViewerAccessTitleReportMessageAudience("unexpected", "moderator")).toBe(true);
   });
 });
 

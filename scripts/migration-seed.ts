@@ -602,8 +602,7 @@ async function seedOnce(options: SeedOptions): Promise<void> {
         id: currentReleaseId,
         title_id: titleId,
         version: title.currentReleaseVersion,
-        status: "published",
-        metadata_revision_number: title.currentMetadataRevision,
+        status: "production",
         acquisition_url: title.acquisition?.url ?? null,
         is_current: true,
         published_at: title.currentReleasePublishedAt ?? null
@@ -616,8 +615,7 @@ async function seedOnce(options: SeedOptions): Promise<void> {
         id: draftReleaseId,
         title_id: titleId,
         version: "1.0.0-rc1",
-        status: "draft",
-        metadata_revision_number: title.currentMetadataRevision,
+        status: "testing",
         acquisition_url: "https://blue-harbor-games.example/titles/compass-echo/rc1",
         is_current: false,
         published_at: null

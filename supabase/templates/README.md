@@ -8,8 +8,12 @@ These templates match the standard Supabase auth email lifecycle and are intende
 
 - `confirmation.html`
 - `email-change.html`
+- `email-changed-notification.html`
 - `invite.html`
 - `magic-link.html`
+- `mfa-factor-enrolled-notification.html`
+- `mfa-factor-unenrolled-notification.html`
+- `password-changed-notification.html`
 - `reauthentication.html`
 - `recovery.html`
 

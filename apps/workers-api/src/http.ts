@@ -18,6 +18,9 @@ export function corsHeaders(origin?: string | null): HeadersInit {
     "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
     "access-control-allow-headers": "authorization,content-type,accept",
     "access-control-max-age": "86400",
+    "cache-control": "no-store",
+    pragma: "no-cache",
+    expires: "0",
     vary: "Origin"
   };
 }

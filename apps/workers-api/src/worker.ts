@@ -231,7 +231,7 @@ export default {
 
       const catalogMatch = url.pathname.match(/^\/catalog\/([^/]+)\/([^/]+)$/);
       if (request.method === "GET" && catalogMatch) {
-        return json(await service.getCatalogTitle(catalogMatch[1]!, catalogMatch[2]!), { headers: responseHeaders });
+        return json(await service.getCatalogTitle(token, catalogMatch[1]!, catalogMatch[2]!), { headers: responseHeaders });
       }
 
       if (request.method === "GET" && url.pathname === "/studios") {
@@ -265,6 +265,10 @@ export default {
       if (request.method === "PUT" && url.pathname === "/identity/me/profile") {
         const body = await readJson<UpdateUserProfileRequest>(request);
         return json(await service.updateCurrentUserProfile(token, body), { headers: responseHeaders });
+      }
+
+      if (request.method === "POST" && url.pathname === "/identity/me/password/verify") {
+        return json(await service.verifyCurrentUserPassword(token, await readJson(request)), { headers: responseHeaders });
       }
 
       if (request.method === "GET" && url.pathname === "/identity/me/board-profile") {
@@ -456,6 +460,27 @@ export default {
         return json(await service.updateTitle(token, developerTitleMatch[1]!, await readJson(request)), { headers: responseHeaders });
       }
 
+      const developerTitleActivateMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/activate$/);
+      if (developerTitleActivateMatch && request.method === "POST") {
+        return json(await service.activateTitle(token, developerTitleActivateMatch[1]!), { headers: responseHeaders });
+      }
+
+      const developerTitleArchiveMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/archive$/);
+      if (developerTitleArchiveMatch && request.method === "POST") {
+        return json(await service.archiveTitle(token, developerTitleArchiveMatch[1]!), { headers: responseHeaders });
+      }
+
+      const developerTitleUnarchiveMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/unarchive$/);
+      if (developerTitleUnarchiveMatch && request.method === "POST") {
+        return json(await service.unarchiveTitle(token, developerTitleUnarchiveMatch[1]!), { headers: responseHeaders });
+      }
+
+      const developerTitleDeleteMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/delete$/);
+      if (developerTitleDeleteMatch && request.method === "POST") {
+        await service.deleteTitle(token, developerTitleDeleteMatch[1]!, await readJson(request));
+        return new Response(null, { status: 204, headers: responseHeaders });
+      }
+
       const developerTitleMetadataCurrentMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/metadata\/current$/);
       if (developerTitleMetadataCurrentMatch && request.method === "PUT") {
         return json(await service.upsertTitleMetadata(token, developerTitleMetadataCurrentMatch[1]!, await readJson(request)), { headers: responseHeaders });
@@ -530,19 +555,9 @@ export default {
         return json(await service.updateTitleRelease(token, developerTitleReleaseMatch[1]!, developerTitleReleaseMatch[2]!, await readJson(request)), { headers: responseHeaders });
       }
 
-      const developerTitleReleasePublishMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/releases\/([^/]+)\/publish$/);
-      if (developerTitleReleasePublishMatch && request.method === "POST") {
-        return json(await service.publishTitleRelease(token, developerTitleReleasePublishMatch[1]!, developerTitleReleasePublishMatch[2]!), { headers: responseHeaders });
-      }
-
       const developerTitleReleaseActivateMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/releases\/([^/]+)\/activate$/);
       if (developerTitleReleaseActivateMatch && request.method === "POST") {
         return json(await service.activateTitleRelease(token, developerTitleReleaseActivateMatch[1]!, developerTitleReleaseActivateMatch[2]!), { headers: responseHeaders });
-      }
-
-      const developerTitleReleaseWithdrawMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/releases\/([^/]+)\/withdraw$/);
-      if (developerTitleReleaseWithdrawMatch && request.method === "POST") {
-        return json(await service.withdrawTitleRelease(token, developerTitleReleaseWithdrawMatch[1]!, developerTitleReleaseWithdrawMatch[2]!), { headers: responseHeaders });
       }
 
       return json(
