@@ -819,6 +819,11 @@ interface SupportIssueReportRequest {
   screenHeight?: number | null;
 }
 
+/**
+ * Internal analytics event payload accepted from the maintained SPA.
+ *
+ * This route is intentionally runtime-only and is not part of the public API contract.
+ */
 export interface AnalyticsEventRequest {
   event:
     | "page_view"
