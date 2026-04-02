@@ -6,6 +6,12 @@
   "workers_dev": true,
   "preview_urls": false,
   "routes": [],
+  "analytics_engine_datasets": [
+    {
+      "binding": "BE_ANALYTICS",
+      "dataset": "board_enthusiasts_events_staging"
+    }
+  ],
   "vars": {
     "APP_ENV": "staging",
     "SUPABASE_URL": "env(SUPABASE_URL)",
@@ -26,6 +32,9 @@
   //   wrangler secret put BREVO_API_KEY
   //   wrangler secret put DEPLOY_SMOKE_SECRET
   "observability": {
-    "enabled": true
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true
+    }
   }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { handleMarketingSignupRoute, handleSupportIssueRoute } from "./worker";
+import { handleAnalyticsEventRoute, handleMarketingSignupRoute, handleSupportIssueRoute } from "./worker";
 
 describe("handleMarketingSignupRoute", () => {
   it("returns a created marketing signup response", async () => {
@@ -285,5 +285,74 @@ describe("handleSupportIssueRoute", () => {
       },
     });
     expect(service.reportSupportIssue).not.toHaveBeenCalled();
+  });
+});
+
+describe("handleAnalyticsEventRoute", () => {
+  it("accepts a user-facing analytics event from an approved origin", async () => {
+    const service = {
+      getContext: vi.fn().mockReturnValue({
+        allowedWebOrigins: ["https://boardenthusiasts.com"],
+        deploySmokeSecret: null,
+      }),
+      recordAnalyticsEvent: vi.fn().mockResolvedValue({
+        accepted: true,
+        analyticsEnabled: true,
+      }),
+    };
+
+    const response = await handleAnalyticsEventRoute(
+      new Request("http://example.test/analytics/events", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "https://boardenthusiasts.com" },
+        body: JSON.stringify({
+          event: "page_view",
+          path: "/browse",
+          authState: "anonymous",
+          metadata: { isNewVisitor: true },
+        }),
+      }),
+      service as never,
+      {},
+    );
+
+    expect(response.status).toBe(202);
+    expect(service.recordAnalyticsEvent).toHaveBeenCalledWith({
+      event: "page_view",
+      path: "/browse",
+      authState: "anonymous",
+      metadata: { isNewVisitor: true },
+    });
+  });
+
+  it("rejects analytics events from unapproved origins", async () => {
+    const service = {
+      getContext: vi.fn().mockReturnValue({
+        allowedWebOrigins: ["https://boardenthusiasts.com"],
+        deploySmokeSecret: null,
+      }),
+      recordAnalyticsEvent: vi.fn(),
+    };
+
+    await expect(
+      handleAnalyticsEventRoute(
+        new Request("http://example.test/analytics/events", {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: "https://evil.example" },
+          body: JSON.stringify({
+            event: "page_view",
+            path: "/browse",
+          }),
+        }),
+        service as never,
+        {},
+      ),
+    ).rejects.toMatchObject({
+      status: 403,
+      payload: {
+        code: "support_issue_origin_forbidden",
+      },
+    });
+    expect(service.recordAnalyticsEvent).not.toHaveBeenCalled();
   });
 });

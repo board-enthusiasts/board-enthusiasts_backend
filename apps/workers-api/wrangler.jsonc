@@ -2,5 +2,17 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "board-enthusiasts-workers-api",
   "main": "src/worker.ts",
-  "compatibility_date": "2025-03-01"
+  "compatibility_date": "2025-03-01",
+  "analytics_engine_datasets": [
+    {
+      "binding": "BE_ANALYTICS",
+      "dataset": "board_enthusiasts_events_local"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "invocation_logs": true
+    }
+  }
 }

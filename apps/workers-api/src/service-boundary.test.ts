@@ -759,6 +759,88 @@ describe("WorkerAppService.getCurrentUserResponse", () => {
   });
 });
 
+describe("WorkerAppService.recordAnalyticsEvent", () => {
+  beforeEach(() => {
+    resetTables();
+    vi.restoreAllMocks();
+    supabaseAuthMocks.getUser.mockReset();
+    supabaseAuthMocks.updateUserById.mockReset();
+    supabaseAuthMocks.listUsers.mockReset();
+    supabaseAuthMocks.signInWithPassword.mockReset();
+  });
+
+  it("writes an environment-aware analytics datapoint when the dataset binding is available", async () => {
+    const writeDataPoint = vi.fn();
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      BE_ANALYTICS: { writeDataPoint } as AnalyticsEngineDataset,
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    const response = await service.recordAnalyticsEvent({
+      event: "title_get_clicked",
+      path: "/browse/cloudline-studio/hearthside-protocol",
+      authState: "authenticated",
+      studioSlug: "cloudline-studio",
+      titleSlug: "hearthside-protocol",
+      surface: "title-detail",
+      contentKind: "game",
+      sessionId: "session-123",
+      visitorId: "visitor-456",
+      referrerPath: "/browse",
+      metadata: {
+        source: "title-detail-page",
+      },
+      value1: 42,
+    });
+
+    expect(response).toEqual({
+      accepted: true,
+      analyticsEnabled: true,
+    });
+    expect(writeDataPoint).toHaveBeenCalledWith({
+      indexes: ["staging:title_get_clicked"],
+      blobs: [
+        "staging",
+        "title_get_clicked",
+        "/browse/cloudline-studio/hearthside-protocol",
+        "authenticated",
+        null,
+        "cloudline-studio",
+        "hearthside-protocol",
+        "title-detail",
+        "game",
+        "session-123",
+        "visitor-456",
+        "/browse",
+        JSON.stringify({ source: "title-detail-page" }),
+      ],
+      doubles: [42, -1],
+    });
+  });
+
+  it("accepts analytics events without failing when the dataset binding is absent", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "local",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    await expect(
+      service.recordAnalyticsEvent({
+        event: "page_view",
+        path: "/browse",
+      }),
+    ).resolves.toEqual({
+      accepted: true,
+      analyticsEnabled: false,
+    });
+  });
+});
+
 describe("WorkerAppService.verifyCurrentUserPassword", () => {
   beforeEach(() => {
     resetTables();

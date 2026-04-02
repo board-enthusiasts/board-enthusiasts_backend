@@ -1,6 +1,6 @@
 import type { MarketingSignupRequest, UpdateUserProfileRequest, UpsertBoardProfileRequest } from "@board-enthusiasts/migration-contract";
 import { empty, json, ApiError, corsHeaders, problem, validationProblem } from "./http";
-import { Env, WorkerAppService, type WorkerAppContext } from "./service-boundary";
+import { Env, WorkerAppService, type AnalyticsEventRequest, type WorkerAppContext } from "./service-boundary";
 
 const localMarketingOrigins = [
   "http://localhost:5173",
@@ -153,6 +153,18 @@ export async function handleSupportIssueRoute(
   });
 }
 
+export async function handleAnalyticsEventRoute(
+  request: Request,
+  service: Pick<WorkerAppService, "recordAnalyticsEvent" | "getContext">,
+  responseHeaders: HeadersInit
+): Promise<Response> {
+  assertAllowedSupportIssueOrigin(request, service.getContext());
+  return json(await service.recordAnalyticsEvent(await readJson<AnalyticsEventRequest>(request)), {
+    status: 202,
+    headers: responseHeaders,
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const service = new WorkerAppService(env);
@@ -187,6 +199,10 @@ export default {
 
       if (request.method === "POST" && url.pathname === "/support/issues") {
         return handleSupportIssueRoute(request, service, responseHeaders);
+      }
+
+      if (request.method === "POST" && url.pathname === "/analytics/events") {
+        return handleAnalyticsEventRoute(request, service, responseHeaders);
       }
 
       if (request.method === "GET" && url.pathname === "/genres") {

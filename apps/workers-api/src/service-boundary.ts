@@ -412,6 +412,51 @@ function trimNullableString(value: string | null | undefined, maxLength: number)
   return trimmed.slice(0, maxLength);
 }
 
+const analyticsEventNames = new Set([
+  "page_view",
+  "oauth_started",
+  "oauth_completed",
+  "account_created",
+  "browse_filters_applied",
+  "title_quick_view_opened",
+  "title_detail_viewed",
+  "title_get_clicked",
+] as const);
+
+function normalizeAnalyticsString(value: string | null | undefined, maxLength: number): string | null {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) {
+    return null;
+  }
+
+  return trimmed.slice(0, maxLength);
+}
+
+function normalizeAnalyticsPath(value: string | null | undefined): string | null {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed || !trimmed.startsWith("/") || trimmed.startsWith("//")) {
+    return null;
+  }
+
+  return trimmed.slice(0, 512);
+}
+
+function normalizeAnalyticsMetadata(value: Record<string, unknown> | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    return JSON.stringify(value).slice(0, 8_000);
+  } catch {
+    return JSON.stringify({ note: "analytics_metadata_serialization_failed" });
+  }
+}
+
+function normalizeAnalyticsDouble(value: number | null | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : -1;
+}
+
 function readTrimmedMetadataString(metadata: Record<string, unknown>, ...keys: string[]): string | null {
   for (const key of keys) {
     const candidate = metadata[key];
@@ -717,6 +762,7 @@ function mapPlayerCollectionMutation(titleId: string, included: boolean, already
 
 export interface Env {
   APP_ENV?: string;
+  BE_ANALYTICS?: AnalyticsEngineDataset;
   SUPABASE_URL?: string;
   SUPABASE_PUBLISHABLE_KEY?: string;
   SUPABASE_SECRET_KEY?: string;
@@ -771,6 +817,31 @@ interface SupportIssueReportRequest {
   viewportHeight?: number | null;
   screenWidth?: number | null;
   screenHeight?: number | null;
+}
+
+export interface AnalyticsEventRequest {
+  event:
+    | "page_view"
+    | "oauth_started"
+    | "oauth_completed"
+    | "account_created"
+    | "browse_filters_applied"
+    | "title_quick_view_opened"
+    | "title_detail_viewed"
+    | "title_get_clicked";
+  path?: string | null;
+  authState?: "anonymous" | "authenticated" | null;
+  provider?: "discord" | "github" | "google" | null;
+  studioSlug?: string | null;
+  titleSlug?: string | null;
+  surface?: string | null;
+  contentKind?: "game" | "app" | null;
+  sessionId?: string | null;
+  visitorId?: string | null;
+  referrerPath?: string | null;
+  metadata?: Record<string, unknown> | null;
+  value1?: number | null;
+  value2?: number | null;
 }
 
 interface AuthenticatedUser {
@@ -925,11 +996,13 @@ export class WorkerAppService {
   private readonly context: WorkerAppContext;
   private readonly client: SupabaseClient;
   private readonly authVerificationClient: SupabaseClient;
+  private readonly analyticsDataset?: AnalyticsEngineDataset;
 
   constructor(env: Env) {
     this.context = parseContext(env);
     this.client = createServiceClient(this.context);
     this.authVerificationClient = createAuthVerificationClient(this.context);
+    this.analyticsDataset = env.BE_ANALYTICS;
   }
 
   getContext(): WorkerAppContext {
@@ -953,6 +1026,53 @@ export class WorkerAppService {
       stackStatus: readinessState.get("status") ?? "unknown",
       supabaseUrlConfigured: true,
       mediaBucket: this.context.supabaseCardImagesBucket
+    };
+  }
+
+  async recordAnalyticsEvent(input: AnalyticsEventRequest): Promise<{ accepted: true; analyticsEnabled: boolean }> {
+    if (!analyticsEventNames.has(input.event)) {
+      throw validationProblem({
+        event: ["Analytics event is not recognized."],
+      });
+    }
+
+    const authState = input.authState === "authenticated" ? "authenticated" : "anonymous";
+    const provider = input.provider === "discord" || input.provider === "github" || input.provider === "google" ? input.provider : null;
+    const contentKind = input.contentKind === "game" || input.contentKind === "app" ? input.contentKind : null;
+
+    if (!this.analyticsDataset) {
+      return {
+        accepted: true,
+        analyticsEnabled: false,
+      };
+    }
+
+    this.analyticsDataset.writeDataPoint({
+      indexes: [`${this.context.envName}:${input.event}`],
+      blobs: [
+        this.context.envName,
+        input.event,
+        normalizeAnalyticsPath(input.path),
+        authState,
+        provider,
+        normalizeAnalyticsString(input.studioSlug, 120),
+        normalizeAnalyticsString(input.titleSlug, 120),
+        normalizeAnalyticsString(input.surface, 120),
+        contentKind,
+        normalizeAnalyticsString(input.sessionId, 120),
+        normalizeAnalyticsString(input.visitorId, 120),
+        normalizeAnalyticsPath(input.referrerPath),
+        normalizeAnalyticsMetadata(input.metadata),
+      ],
+      doubles: [
+        normalizeAnalyticsDouble(input.value1),
+        normalizeAnalyticsDouble(input.value2),
+      ],
+    });
+
+    return {
+      accepted: true,
+      analyticsEnabled: true,
     };
   }
 
