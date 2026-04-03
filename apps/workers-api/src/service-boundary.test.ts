@@ -44,6 +44,10 @@ type AppUserRow = {
   identity_provider: string | null;
   avatar_url: string | null;
   avatar_storage_path?: string | null;
+  brevo_contact_id?: string | null;
+  brevo_sync_state?: "pending" | "synced" | "skipped" | "failed";
+  brevo_synced_at?: string | null;
+  brevo_last_error?: string | null;
   updated_at: string;
 };
 
@@ -703,6 +707,121 @@ describe("WorkerAppService.getCurrentUserResponse", () => {
       auth_user_id: "auth-user-1",
       avatar_url: "https://cdn.discordapp.com/avatars/123/avatar.png",
       identity_provider: "discord",
+    });
+  });
+
+  it("syncs newly projected account signups into Brevo when the list is configured", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: 501 }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    supabaseAuthMocks.getUser.mockResolvedValue({
+      data: {
+        user: {
+          id: "auth-user-1",
+          email: "jmh@example.com",
+          email_confirmed_at: "2026-04-03T12:00:00Z",
+          app_metadata: { provider: "email" },
+          user_metadata: {
+            userName: "jmhtruman",
+            firstName: "John",
+            lastName: "Truman",
+            displayName: "John Truman",
+            beMarketingOptIn: true,
+            beMarketingConsentTextVersion: "account-signup-v1",
+          },
+          identities: [{ provider: "email" }],
+        },
+      },
+      error: null,
+    });
+
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+      BREVO_API_KEY: "brevo-api-key",
+      BREVO_SIGNUPS_LIST_ID: "12",
+    });
+
+    await expect(service.getCurrentUserProfile("test-token")).resolves.toMatchObject({
+      profile: {
+        subject: "auth-user-1",
+        userName: "jmhtruman",
+        email: "jmh@example.com",
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.brevo.com/v3/contacts",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          "api-key": "brevo-api-key",
+          accept: "application/json",
+          "content-type": "application/json",
+        }),
+      }),
+    );
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain("\"email\":\"jmh@example.com\"");
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain("\"SOURCE\":\"account_signup\"");
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain("\"BE_LIFECYCLE_STATUS\":\"converted\"");
+    expect(String(fetchMock.mock.calls[0]?.[1]?.body)).toContain("\"BE_ROLE_INTEREST\":\"player\"");
+    expect(tables.app_users[0]).toMatchObject({
+      user_name: "jmhtruman",
+      brevo_contact_id: "501",
+      brevo_sync_state: "synced",
+    });
+  });
+
+  it("skips Brevo sync for newly projected account signups when the user did not opt in", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    supabaseAuthMocks.getUser.mockResolvedValue({
+      data: {
+        user: {
+          id: "auth-user-1",
+          email: "jmh@example.com",
+          email_confirmed_at: "2026-04-03T12:00:00Z",
+          app_metadata: { provider: "email" },
+          user_metadata: {
+            userName: "jmhtruman",
+            firstName: "John",
+            lastName: "Truman",
+            displayName: "John Truman",
+            beMarketingOptIn: false,
+          },
+          identities: [{ provider: "email" }],
+        },
+      },
+      error: null,
+    });
+
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+      BREVO_API_KEY: "brevo-api-key",
+      BREVO_SIGNUPS_LIST_ID: "12",
+    });
+
+    await expect(service.getCurrentUserResponse("test-token")).resolves.toMatchObject({
+      subject: "auth-user-1",
+      displayName: "John Truman",
+      email: "jmh@example.com",
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(tables.app_users[0]).toMatchObject({
+      user_name: "jmhtruman",
+      brevo_contact_id: null,
+      brevo_sync_state: "skipped",
     });
   });
 

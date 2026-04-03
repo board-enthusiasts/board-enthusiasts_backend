@@ -91,6 +91,10 @@ type AppUserRow = {
   identity_provider: string | null;
   avatar_url: string | null;
   avatar_storage_path: string | null;
+  brevo_contact_id?: string | null;
+  brevo_sync_state?: "pending" | "synced" | "skipped" | "failed";
+  brevo_synced_at?: string | null;
+  brevo_last_error?: string | null;
   updated_at: string;
 };
 
@@ -466,6 +470,12 @@ function readTrimmedMetadataString(metadata: Record<string, unknown>, ...keys: s
   }
 
   return null;
+}
+
+function readAccountSignupMarketingOptIn(authUser: SupabaseAuthUser): boolean {
+  const metadata = (authUser.user_metadata ?? {}) as Record<string, unknown>;
+  const candidate = metadata.beMarketingOptIn;
+  return candidate === true || candidate === "true";
 }
 
 function extractAuthMetadataAvatarUrl(metadata: Record<string, unknown>): string | null {
@@ -2947,12 +2957,15 @@ export class WorkerAppService {
       throw problem(401, "unauthorized", "Unauthorized", "The supplied bearer token is invalid or expired.");
     }
 
-    const appUser = await this.findOrCreateProjectedUser(data.user);
+    const { appUser, created } = await this.findOrCreateProjectedUser(data.user);
     const roles = await this.ensureDefaultPlatformRoles(appUser.id);
+    if (created) {
+      await this.syncProjectedAppUserToBrevo(appUser, roles, data.user);
+    }
     return { appUser, roles };
   }
 
-  private async findOrCreateProjectedUser(authUser: SupabaseAuthUser): Promise<AppUserRow> {
+  private async findOrCreateProjectedUser(authUser: SupabaseAuthUser): Promise<{ appUser: AppUserRow; created: boolean }> {
     const { data: appUserRows, error: appUserError } = await this.client
       .from("app_users")
       .select("*")
@@ -2964,7 +2977,10 @@ export class WorkerAppService {
 
     const existing = (appUserRows as AppUserRow[])[0];
     if (existing) {
-      return this.syncProjectedUserFromAuth(existing, authUser);
+      return {
+        appUser: await this.syncProjectedUserFromAuth(existing, authUser),
+        created: false,
+      };
     }
 
     const metadata = (authUser.user_metadata ?? {}) as Record<string, unknown>;
@@ -3001,6 +3017,10 @@ export class WorkerAppService {
         identity_provider: provider,
         avatar_url: avatarUrl,
         avatar_storage_path: null,
+        brevo_contact_id: null,
+        brevo_sync_state: "pending",
+        brevo_synced_at: null,
+        brevo_last_error: null,
         updated_at: now,
       })
       .select("*")
@@ -3009,7 +3029,10 @@ export class WorkerAppService {
       throw problem(500, "identity_projection_create_failed", "Identity projection failed.", insertError.message);
     }
 
-    return inserted as unknown as AppUserRow;
+    return {
+      appUser: inserted as unknown as AppUserRow,
+      created: true,
+    };
   }
 
   private async syncProjectedUserFromAuth(existing: AppUserRow, authUser: SupabaseAuthUser): Promise<AppUserRow> {
@@ -3055,6 +3078,112 @@ export class WorkerAppService {
       ...existing,
       ...updates,
     };
+  }
+
+  private async syncProjectedAppUserToBrevo(
+    appUser: AppUserRow,
+    roles: readonly PlatformRole[],
+    authUser: SupabaseAuthUser
+  ): Promise<void> {
+    if (!readAccountSignupMarketingOptIn(authUser)) {
+      await this.updateProjectedAppUserBrevoState(appUser.id, {
+        brevo_sync_state: "skipped",
+        brevo_last_error: null,
+        brevo_synced_at: null,
+      });
+      return;
+    }
+
+    if (!appUser.email) {
+      await this.updateProjectedAppUserBrevoState(appUser.id, {
+        brevo_sync_state: "skipped",
+        brevo_last_error: null,
+        brevo_synced_at: null,
+      });
+      return;
+    }
+
+    if (!this.context.brevoApiKey || !this.context.brevoSignupsListId) {
+      await this.updateProjectedAppUserBrevoState(appUser.id, {
+        brevo_sync_state: "skipped",
+        brevo_last_error: null,
+        brevo_synced_at: null,
+      });
+      return;
+    }
+
+    const roleInterests = new Set<MarketingContactRoleInterest>();
+    if (roles.includes("developer") || roles.includes("verified_developer")) {
+      roleInterests.add("developer");
+    }
+    if (roles.includes("player") || roleInterests.size === 0) {
+      roleInterests.add("player");
+    }
+
+    try {
+      const response = await fetch("https://api.brevo.com/v3/contacts", {
+        method: "POST",
+        headers: {
+          "api-key": this.context.brevoApiKey,
+          accept: "application/json",
+          "content-type": "application/json"
+        },
+        body: JSON.stringify({
+          email: appUser.email,
+          attributes: {
+            FIRSTNAME: appUser.first_name ?? appUser.display_name ?? undefined,
+            SOURCE: "account_signup",
+            BE_LIFECYCLE_STATUS: "converted",
+            BE_ROLE_INTEREST: [...roleInterests].sort().join(",")
+          },
+          listIds: [this.context.brevoSignupsListId],
+          updateEnabled: true,
+          emailBlacklisted: false
+        })
+      });
+
+      if (!response.ok) {
+        const detail = await response.text();
+        await this.updateProjectedAppUserBrevoState(appUser.id, {
+          brevo_sync_state: "failed",
+          brevo_last_error: detail.trim().slice(0, 1000) || `Brevo returned ${response.status}.`,
+          brevo_synced_at: null,
+        });
+        return;
+      }
+
+      const payload = (await response.json().catch(() => ({}))) as { id?: number | string };
+      await this.updateProjectedAppUserBrevoState(appUser.id, {
+        brevo_contact_id: payload.id ? String(payload.id) : appUser.brevo_contact_id ?? null,
+        brevo_sync_state: "synced",
+        brevo_last_error: null,
+        brevo_synced_at: new Date().toISOString(),
+      });
+    } catch (error) {
+      await this.updateProjectedAppUserBrevoState(appUser.id, {
+        brevo_sync_state: "failed",
+        brevo_last_error: (error instanceof Error ? error.message : String(error)).slice(0, 1000),
+        brevo_synced_at: null,
+      });
+      console.warn("Projected account Brevo sync failed.", error);
+    }
+  }
+
+  private async updateProjectedAppUserBrevoState(
+    appUserId: string,
+    update: Partial<Pick<AppUserRow, "brevo_contact_id" | "brevo_sync_state" | "brevo_last_error" | "brevo_synced_at">>
+  ): Promise<void> {
+    const { error } = await this.client
+      .from("app_users")
+      .update({
+        ...update,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", appUserId);
+
+    if (error) {
+      throw problem(500, "identity_projection_update_failed", "Identity lookup failed.", error.message);
+    }
   }
 
   private async reserveProjectedUserName(requestedValue: string): Promise<string> {
