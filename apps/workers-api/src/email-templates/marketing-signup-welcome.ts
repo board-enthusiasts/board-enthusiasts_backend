@@ -14,7 +14,7 @@ function escapeHtml(value: string): string {
 
 function formatRoleInterests(roleInterests: readonly MarketingContactRoleInterest[]): string {
   const labels: Record<MarketingContactRoleInterest, string> = {
-    developer: "creating third-party content for Board",
+    developer: "creating indie content for Board",
     player: "following new Board games and apps",
   };
 

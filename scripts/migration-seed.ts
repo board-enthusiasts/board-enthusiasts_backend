@@ -655,6 +655,37 @@ async function seedOnce(options: SeedOptions): Promise<void> {
       }
     }
 
+    const showcaseMediaRows: Array<Record<string, unknown>> = [];
+    for (const showcaseMedia of title.showcaseMedia ?? []) {
+      const uploaded = await uploadAsset(
+        client,
+        options.heroImagesBucket,
+        options.assetRoot!,
+        showcaseMedia.assetPath,
+        `titles/${title.studioSlug}/${title.slug}/showcase/${showcaseMedia.displayOrder}${path.extname(showcaseMedia.assetPath).toLowerCase()}`,
+        "image/png"
+      );
+      showcaseMediaRows.push({
+        id: buildStableSeedUuid(`title-showcase:${title.studioSlug}:${title.slug}:${showcaseMedia.displayOrder}:${showcaseMedia.kind}`),
+        title_id: titleId,
+        kind: showcaseMedia.kind,
+        image_url: uploaded.publicUrl,
+        image_storage_path: uploaded.storagePath,
+        video_url: showcaseMedia.videoUrl ?? null,
+        alt_text: showcaseMedia.altText,
+        display_order: showcaseMedia.displayOrder
+      });
+    }
+    if (showcaseMediaRows.length > 0) {
+      const { error: showcaseMediaInsertError } = await client.from("title_showcase_media").upsert(showcaseMediaRows, {
+        onConflict: "id",
+        ignoreDuplicates: true
+      });
+      if (showcaseMediaInsertError) {
+        throw showcaseMediaInsertError;
+      }
+    }
+
     const metadataVersionRows: Array<Record<string, unknown>> = [];
     const metadataVersionGenreRows: Array<Record<string, unknown>> = [];
     for (let revisionNumber = 1; revisionNumber <= title.currentMetadataRevision; revisionNumber += 1) {
@@ -745,6 +776,67 @@ async function seedOnce(options: SeedOptions): Promise<void> {
       }
     }
   }
+
+  console.log("==> Seeding home spotlights and offering spotlights");
+  const homeSpotlightRows = [
+    { slot_number: 1, title_id: titleIdsBySlug.get("beacon-boardwalk"), is_active: true },
+    { slot_number: 2, title_id: titleIdsBySlug.get("lantern-drift"), is_active: true },
+    { slot_number: 3, title_id: titleIdsBySlug.get("cascade-courier"), is_active: true }
+  ].filter((row): row is { slot_number: number; title_id: string; is_active: boolean } => Boolean(row.title_id));
+  if (homeSpotlightRows.length > 0) {
+    const { error: homeSpotlightError } = await client.from("home_spotlight_entries").upsert(homeSpotlightRows, {
+      onConflict: "slot_number"
+    });
+    if (homeSpotlightError) {
+      throw homeSpotlightError;
+    }
+  }
+
+  const homeOfferingSpotlightRows = [
+    {
+      slot_number: 1,
+      eyebrow: "Live now",
+      title: "BE Game Index",
+      description: "Browse indie Board games and apps, follow studios, and keep your wishlist moving without hopping across a dozen separate sites.",
+      status_label: "Available now",
+      glyph: "library",
+      action_label: "Browse the index",
+      action_url: "/browse",
+      action_external: false,
+      is_active: true
+    },
+    {
+      slot_number: 2,
+      eyebrow: "Community",
+      title: "Board Enthusiasts Discord",
+      description: "Meet indie builders, compare notes with players, and stay close to the BE community shaping what gets built next.",
+      status_label: "Available now",
+      glyph: "discord",
+      action_label: "Join Discord",
+      action_url: "https://discord.gg/cz2zReWqcA",
+      action_external: true,
+      is_active: true
+    },
+    {
+      slot_number: 3,
+      eyebrow: "Developer support",
+      title: "Install guide and docs",
+      description: "Use BE's install guidance and supporting documentation to understand the current PC-to-Board workflow while the ecosystem keeps maturing.",
+      status_label: "Updated for launch",
+      glyph: "toolkit",
+      action_label: "Open install guide",
+      action_url: "/install-guide",
+      action_external: false,
+      is_active: true
+    }
+  ] as const;
+  const { error: homeOfferingSpotlightError } = await client.from("home_offering_spotlight_entries").upsert(homeOfferingSpotlightRows, {
+    onConflict: "slot_number"
+  });
+  if (homeOfferingSpotlightError) {
+    throw homeOfferingSpotlightError;
+  }
+
   const avaUserId = appUsersByUserName.get("ava.garcia");
   const alexUserId = appUsersByUserName.get("alex.rivera");
   const emmaUserId = appUsersByUserName.get("emma.torres");
@@ -848,8 +940,8 @@ async function seedOnce(options: SeedOptions): Promise<void> {
         user_id: emmaUserId,
         category: "title_report",
         title: "Moderator follow-up for your title",
-        body: "Alex Rivera sent an update about Orbit Orchard. Review the report thread and respond from Develop.",
-        action_url: `/develop?domain=titles&workflow=titles-reports&titleId=${orbitOrchardTitleId}&reportId=${reportId}`,
+        body: "Alex Rivera sent an update about Orbit Orchard. Review the report thread and respond from the Developer workspace.",
+        action_url: `/developer?domain=titles&workflow=titles-reports&titleId=${orbitOrchardTitleId}&reportId=${reportId}`,
         is_read: false,
         read_at: null,
         created_at: updatedAt,
@@ -946,7 +1038,7 @@ async function seedOnce(options: SeedOptions): Promise<void> {
         category: "title_report",
         title: "Moderator follow-up for your title",
         body: "Alex Rivera sent an update about Compass Echo. Open the developer report thread for the latest moderator note.",
-        action_url: `/develop?domain=titles&workflow=titles-reports&titleId=${compassEchoTitleId}&reportId=${reportId}`,
+        action_url: `/developer?domain=titles&workflow=titles-reports&titleId=${compassEchoTitleId}&reportId=${reportId}`,
         is_read: false,
         read_at: null,
         created_at: updatedAt,

@@ -275,7 +275,7 @@ describe("WorkerAppService.createMarketingSignup", () => {
     });
     expect(String(fetchMock.mock.calls[2]?.[1]?.body)).toContain("\"name\":\"Taylor\"");
     expect(String(fetchMock.mock.calls[2]?.[1]?.body)).toContain("\"htmlContent\":\"<!DOCTYPE html>");
-    expect(String(fetchMock.mock.calls[2]?.[1]?.body)).toContain("creating third-party content for Board, following new Board games and apps");
+    expect(String(fetchMock.mock.calls[2]?.[1]?.body)).toContain("creating indie content for Board, following new Board games and apps");
     expect(String(fetchMock.mock.calls[2]?.[1]?.body)).toContain("For Board Players and Builders");
   });
 

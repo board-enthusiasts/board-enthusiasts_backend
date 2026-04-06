@@ -9,6 +9,7 @@ import {
   type MarketingSignupResponse,
   type BoardProfileResponse,
   type CreateDeveloperTitleRequest,
+  type CreateTitleShowcaseMediaRequest,
   type DeleteDeveloperTitleRequest,
   migrationMediaBuckets,
   migrationMediaUploadPolicies,
@@ -33,6 +34,8 @@ import {
   type ModerationDeveloperListResponse,
   normalizeGenreSlug,
   type PlayerCollectionMutationResponse,
+  type PlayerFollowedStudioListResponse,
+  type PlayerStudioFollowMutationResponse,
   type PlayerTitleListResponse,
   type PlayerTitleReportListResponse,
   type PlayerTitleReportResponse,
@@ -60,16 +63,22 @@ import {
   type TitleMediaAsset,
   type TitleMediaAssetListResponse,
   type TitleMediaAssetResponse,
+  type TitleShowcaseMedia,
+  type TitleShowcaseMediaKind,
+  type TitleShowcaseMediaListResponse,
+  type TitleShowcaseMediaResponse,
   type TitleMetadataVersion,
   type TitleMetadataVersionListResponse,
   type TitleRelease,
   type TitleReleaseListResponse,
   type TitleReleaseResponse,
   type TitleVisibility,
+  type HomeSpotlightResponse,
   type UpsertBoardProfileRequest,
   type UpsertTitleMediaAssetRequest,
   type UpsertTitleMetadataRequest,
   type UpsertTitleReleaseRequest,
+  type UpdateTitleShowcaseMediaRequest,
   type UpdateDeveloperTitleRequest,
   type UserProfileResponse,
   type VerifyCurrentUserPasswordRequest,
@@ -189,8 +198,8 @@ type TitleRow = {
   genre_display: string;
   min_players: number;
   max_players: number;
-  age_rating_authority: string;
-  age_rating_value: string;
+  age_rating_authority: string | null;
+  age_rating_value: string | null;
   min_age_years: number;
   current_release_id: string | null;
   current_release_version: string | null;
@@ -222,6 +231,19 @@ type TitleMediaAssetRow = {
   mime_type: string | null;
   width: number | null;
   height: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type TitleShowcaseMediaRow = {
+  id: string;
+  title_id: string;
+  kind: TitleShowcaseMediaKind;
+  image_url: string | null;
+  image_storage_path: string | null;
+  video_url: string | null;
+  alt_text: string | null;
+  display_order: number;
   created_at: string;
   updated_at: string;
 };
@@ -260,6 +282,27 @@ type PlayerWishlistRow = {
   created_at: string;
 };
 
+type PlayerFollowedStudioRow = {
+  user_id: string;
+  studio_id: string;
+  created_at: string;
+};
+
+type HomeOfferingSpotlightRow = {
+  slot_number: number;
+  eyebrow: string;
+  title: string;
+  description: string;
+  status_label: string;
+  glyph: "api" | "discord" | "library" | "spark" | "toolkit" | "youtube";
+  action_label: string | null;
+  action_url: string | null;
+  action_external: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 type TitleReportStatus =
   | "open"
   | "needs_developer_response"
@@ -293,8 +336,8 @@ type TitleMetadataVersionRow = {
   genre_display: string;
   min_players: number;
   max_players: number;
-  age_rating_authority: string;
-  age_rating_value: string;
+  age_rating_authority: string | null;
+  age_rating_value: string | null;
   min_age_years: number;
   created_at: string;
   updated_at: string;
@@ -308,10 +351,33 @@ type TitleReleaseRow = {
   version: string;
   status: TitleReleaseStatus;
   acquisition_url: string | null;
+  expires_at: string | null;
   is_current: boolean;
   published_at: string | null;
   created_at: string;
   updated_at: string;
+};
+
+type HomeSpotlightEntryRow = {
+  slot_number: number;
+  title_id: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+type HomeOfferingSpotlightResponse = {
+  entries: Array<{
+    slotNumber: number;
+    eyebrow: string;
+    title: string;
+    description: string;
+    statusLabel: string;
+    glyph: "api" | "discord" | "library" | "spark" | "toolkit" | "youtube";
+    actionLabel: string | null;
+    actionUrl: string | null;
+    actionExternal: boolean;
+  }>;
 };
 
 type TitleReportMessageRow = {
@@ -386,7 +452,11 @@ function buildPlayerCountDisplay(minPlayers: number, maxPlayers: number): string
   return minPlayers === maxPlayers ? `${minPlayers} player${minPlayers === 1 ? "" : "s"}` : `${minPlayers}-${maxPlayers} players`;
 }
 
-function buildAgeDisplay(authority: string, value: string): string {
+function buildAgeDisplay(authority: string | null, value: string | null): string | null {
+  if (!authority || !value) {
+    return null;
+  }
+
   return `${authority} ${value}`;
 }
 
@@ -425,6 +495,9 @@ const analyticsEventNames = new Set([
   "title_quick_view_opened",
   "title_detail_viewed",
   "title_get_clicked",
+  "title_wishlisted",
+  "studio_followed",
+  "homepage_spotlight_clicked",
 ] as const);
 
 function normalizeAnalyticsString(value: string | null | undefined, maxLength: number): string | null {
@@ -549,6 +622,22 @@ function isPublicCatalogDetail(title: TitleRow): boolean {
   return isPublicCatalogTitle(title);
 }
 
+function isReleasePubliclyAvailable(release: TitleReleaseRow | null | undefined): boolean {
+  if (!release) {
+    return false;
+  }
+
+  if (release.status === "production") {
+    return true;
+  }
+
+  if (!release.expires_at) {
+    return true;
+  }
+
+  return release.expires_at > new Date().toISOString();
+}
+
 function mapStudioLink(row: StudioLinkRow): StudioLink {
   return {
     id: row.id,
@@ -571,6 +660,31 @@ function mapTitleMediaAsset(row: TitleMediaAssetRow): TitleMediaAsset {
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
+}
+
+function mapTitleShowcaseMedia(row: TitleShowcaseMediaRow): TitleShowcaseMedia {
+  return {
+    id: row.id,
+    kind: row.kind,
+    imageUrl: row.image_url,
+    videoUrl: row.video_url,
+    altText: row.alt_text,
+    displayOrder: row.display_order,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  };
+}
+
+function isRenderableShowcaseMedia(row: TitleShowcaseMediaRow): boolean {
+  if (!row.image_url) {
+    return false;
+  }
+
+  if (row.kind === "external_video") {
+    return Boolean(row.video_url);
+  }
+
+  return true;
 }
 
 function mapGenreDefinition(row: GenreRow): GenreDefinition {
@@ -615,6 +729,7 @@ function mapTitleRelease(row: TitleReleaseRow): TitleRelease {
     version: row.version,
     status: row.status,
     acquisitionUrl: row.acquisition_url,
+    expiresAt: row.expires_at,
     isCurrent: row.is_current,
     publishedAt: row.published_at,
     createdAt: row.created_at,
@@ -622,8 +737,26 @@ function mapTitleRelease(row: TitleReleaseRow): TitleRelease {
   };
 }
 
-function buildAcquisition(row: TitleRow, options: { allowUnavailable?: boolean } = {}): PublicTitleAcquisition | undefined {
-  if (!row.acquisition_url || (!options.allowUnavailable && !isPublicCatalogDetail(row))) {
+function buildCurrentRelease(row: TitleRow, currentReleaseRow?: TitleReleaseRow | null): DeveloperTitle["currentRelease"] | CatalogTitle["currentRelease"] {
+  if (!row.current_release_id || !row.current_release_version) {
+    return undefined;
+  }
+
+  return {
+    id: row.current_release_id,
+    version: row.current_release_version,
+    publishedAt: currentReleaseRow?.published_at ?? row.current_release_published_at ?? row.updated_at
+  };
+}
+
+function buildAcquisition(
+  row: TitleRow,
+  options: { allowUnavailable?: boolean; currentReleaseRow?: TitleReleaseRow | null } = {}
+): PublicTitleAcquisition | undefined {
+  if (
+    !row.acquisition_url ||
+    (!options.allowUnavailable && (!isPublicCatalogDetail(row) || !isReleasePubliclyAvailable(options.currentReleaseRow)))
+  ) {
     return undefined;
   }
 
@@ -632,7 +765,12 @@ function buildAcquisition(row: TitleRow, options: { allowUnavailable?: boolean }
   };
 }
 
-function buildCatalogSummary(title: TitleRow, studio: StudioRow, mediaRows: TitleMediaAssetRow[]): CatalogTitleSummary {
+function buildCatalogSummary(
+  title: TitleRow,
+  studio: StudioRow,
+  mediaRows: TitleMediaAssetRow[],
+  currentReleaseRow?: TitleReleaseRow | null
+): CatalogTitleSummary {
   const cardImageUrl = mediaRows.find((row) => row.media_role === "card")?.source_url ?? null;
   const logoImageUrl = mediaRows.find((row) => row.media_role === "logo")?.source_url ?? null;
   return {
@@ -658,30 +796,37 @@ function buildCatalogSummary(title: TitleRow, studio: StudioRow, mediaRows: Titl
     ageDisplay: buildAgeDisplay(title.age_rating_authority, title.age_rating_value),
     cardImageUrl,
     logoImageUrl,
-    acquisitionUrl: isPublicCatalogDetail(title) ? title.acquisition_url : null
+    acquisitionUrl: isPublicCatalogDetail(title) && isReleasePubliclyAvailable(currentReleaseRow) ? title.acquisition_url : null
   };
 }
 
-function buildCatalogDetail(title: TitleRow, studio: StudioRow, mediaRows: TitleMediaAssetRow[]): CatalogTitle {
+function buildCatalogDetail(
+  title: TitleRow,
+  studio: StudioRow,
+  mediaRows: TitleMediaAssetRow[],
+  showcaseRows: TitleShowcaseMediaRow[],
+  currentReleaseRow?: TitleReleaseRow | null
+): CatalogTitle {
   return {
-    ...buildCatalogSummary(title, studio, mediaRows),
+    ...buildCatalogSummary(title, studio, mediaRows, currentReleaseRow),
     description: title.description,
     mediaAssets: mediaRows.map(mapTitleMediaAsset),
-    currentRelease:
-      title.current_release_id && title.current_release_version
-        ? {
-            id: title.current_release_id,
-            version: title.current_release_version,
-            publishedAt: title.current_release_published_at ?? title.updated_at
-          }
-        : undefined,
-    acquisition: buildAcquisition(title),
+    showcaseMedia: showcaseRows.filter(isRenderableShowcaseMedia).map(mapTitleShowcaseMedia),
+    currentRelease: isReleasePubliclyAvailable(currentReleaseRow) ? buildCurrentRelease(title, currentReleaseRow) : undefined,
+    acquisition: buildAcquisition(title, { currentReleaseRow }),
     createdAt: title.created_at,
     updatedAt: title.updated_at
   };
 }
 
-function buildDeveloperTitle(title: TitleRow, studio: StudioRow, mediaRows: TitleMediaAssetRow[], genreSlugs: string[]): DeveloperTitle {
+function buildDeveloperTitle(
+  title: TitleRow,
+  studio: StudioRow,
+  mediaRows: TitleMediaAssetRow[],
+  showcaseRows: TitleShowcaseMediaRow[],
+  genreSlugs: string[],
+  currentReleaseRow?: TitleReleaseRow | null
+): DeveloperTitle {
   return {
     id: title.id,
     studioId: title.studio_id,
@@ -706,15 +851,9 @@ function buildDeveloperTitle(title: TitleRow, studio: StudioRow, mediaRows: Titl
     cardImageUrl: mediaRows.find((row) => row.media_role === "card")?.source_url ?? null,
     acquisitionUrl: title.acquisition_url,
     mediaAssets: mediaRows.map(mapTitleMediaAsset),
-    currentRelease:
-      title.current_release_id && title.current_release_version
-        ? {
-            id: title.current_release_id,
-            version: title.current_release_version,
-            publishedAt: title.current_release_published_at ?? title.updated_at
-          }
-        : undefined,
-    acquisition: buildAcquisition(title, { allowUnavailable: true }),
+    showcaseMedia: showcaseRows.map(mapTitleShowcaseMedia),
+    currentRelease: buildCurrentRelease(title, currentReleaseRow),
+    acquisition: buildAcquisition(title, { allowUnavailable: true, currentReleaseRow }),
     currentReleaseId: title.current_release_id,
     createdAt: title.created_at,
     updatedAt: title.updated_at
@@ -765,6 +904,14 @@ function mapMarketingSignup(record: MarketingContactRecord): MarketingSignupResp
 function mapPlayerCollectionMutation(titleId: string, included: boolean, alreadyInRequestedState: boolean): PlayerCollectionMutationResponse {
   return {
     titleId,
+    included,
+    alreadyInRequestedState
+  };
+}
+
+function mapPlayerStudioFollowMutation(studioId: string, included: boolean, alreadyInRequestedState: boolean): PlayerStudioFollowMutationResponse {
+  return {
+    studioId,
     included,
     alreadyInRequestedState
   };
@@ -843,7 +990,10 @@ export interface AnalyticsEventRequest {
     | "browse_filters_applied"
     | "title_quick_view_opened"
     | "title_detail_viewed"
-    | "title_get_clicked";
+    | "title_get_clicked"
+    | "title_wishlisted"
+    | "studio_followed"
+    | "homepage_spotlight_clicked";
   path?: string | null;
   authState?: "anonymous" | "authenticated" | null;
   provider?: "discord" | "github" | "google" | null;
@@ -1573,6 +1723,33 @@ export class WorkerAppService {
     return this.setPlayerCollectionState(user.appUser.id, titleId, included, "wishlist");
   }
 
+  async getPlayerFollowedStudios(token: string): Promise<PlayerFollowedStudioListResponse> {
+    const user = await this.requireUser(token);
+    const followedStudios = await this.getPlayerFollowedStudioRows(user.appUser.id);
+    const studios = await this.getStudiosByIds(followedStudios.map((row) => row.studio_id));
+    const linksByStudioId = await this.getStudioLinksByStudioIds(studios.map((studio) => studio.id));
+    const followerCountByStudioId = await this.getStudioFollowerCounts(studios.map((studio) => studio.id));
+    const studioById = new Map(studios.map((studio) => [studio.id, studio]));
+
+    return {
+      studios: followedStudios
+        .map((row) => {
+          const studio = studioById.get(row.studio_id);
+          if (!studio) {
+            return null;
+          }
+
+          return this.buildStudioSummary(studio, linksByStudioId.get(studio.id) ?? [], followerCountByStudioId.get(studio.id) ?? 0);
+        })
+        .filter((studio): studio is Studio => Boolean(studio))
+    };
+  }
+
+  async setPlayerStudioFollowState(token: string, studioId: string, included: boolean): Promise<PlayerStudioFollowMutationResponse> {
+    const user = await this.requireUser(token);
+    return this.setPlayerStudioFollowStateByUserId(user.appUser.id, studioId, included);
+  }
+
   async listPlayerTitleReports(token: string): Promise<PlayerTitleReportListResponse> {
     const user = await this.requireUser(token);
     const reports = await this.getTitleReportsByReporter(user.appUser.id);
@@ -1897,11 +2074,12 @@ export class WorkerAppService {
   async listPublicStudios(): Promise<StudioListResponse> {
     const studios = await this.getStudios();
     const linksByStudioId = await this.getStudioLinksByStudioIds(studios.map((studio) => studio.id));
+    const followerCountByStudioId = await this.getStudioFollowerCounts(studios.map((studio) => studio.id));
 
     return {
       studios: studios
         .sort((left, right) => left.display_name.localeCompare(right.display_name))
-        .map((studio) => this.buildStudioSummary(studio, linksByStudioId.get(studio.id) ?? []))
+        .map((studio) => this.buildStudioSummary(studio, linksByStudioId.get(studio.id) ?? [], followerCountByStudioId.get(studio.id) ?? 0))
     };
   }
 
@@ -1919,12 +2097,79 @@ export class WorkerAppService {
     };
   }
 
+  async listHomeSpotlights(): Promise<HomeSpotlightResponse> {
+    const spotlightRows = await this.getHomeSpotlightEntryRows();
+    if (spotlightRows.length === 0) {
+      return {
+        entries: []
+      };
+    }
+
+    const titles = await this.getTitlesByIds(spotlightRows.map((row) => row.title_id));
+    const publicTitles = titles.filter(isPublicCatalogDetail);
+    const titleById = new Map(publicTitles.map((title) => [title.id, title]));
+    const [studios, mediaByTitleId, showcaseByTitleId, currentReleaseById] = await Promise.all([
+      this.getStudiosByIds(publicTitles.map((title) => title.studio_id)),
+      this.getTitleMediaByTitleIds(publicTitles.map((title) => title.id)),
+      this.getTitleShowcaseMediaByTitleIds(publicTitles.map((title) => title.id)),
+      this.getTitleReleaseRowsByIds(
+        publicTitles.map((title) => title.current_release_id).filter((value): value is string => Boolean(value))
+      )
+    ]);
+    const studioById = new Map(studios.map((studio) => [studio.id, studio]));
+
+    return {
+      entries: spotlightRows
+        .map((row) => {
+          const title = titleById.get(row.title_id);
+          if (!title) {
+            return null;
+          }
+
+          const studio = studioById.get(title.studio_id);
+          if (!studio) {
+            return null;
+          }
+
+          return {
+            slotNumber: row.slot_number,
+            title: buildCatalogDetail(
+              title,
+              studio,
+              mediaByTitleId.get(title.id) ?? [],
+              showcaseByTitleId.get(title.id) ?? [],
+              currentReleaseById.get(title.current_release_id ?? "")
+            )
+          };
+        })
+        .filter((entry): entry is HomeSpotlightResponse["entries"][number] => Boolean(entry))
+    };
+  }
+
+  async listHomeOfferingSpotlights(): Promise<HomeOfferingSpotlightResponse> {
+    const rows = await this.getHomeOfferingSpotlightRows();
+    return {
+      entries: rows.map((row) => ({
+        slotNumber: row.slot_number,
+        eyebrow: row.eyebrow,
+        title: row.title,
+        description: row.description,
+        statusLabel: row.status_label,
+        glyph: row.glyph,
+        actionLabel: row.action_label,
+        actionUrl: row.action_url,
+        actionExternal: row.action_external
+      }))
+    };
+  }
+
   async getPublicStudio(slug: string): Promise<StudioResponse> {
     const studio = await this.getStudioBySlug(slug);
     const linksByStudioId = await this.getStudioLinksByStudioIds([studio.id]);
+    const followerCountByStudioId = await this.getStudioFollowerCounts([studio.id]);
 
     return {
-      studio: this.buildStudio(studio, linksByStudioId.get(studio.id) ?? [])
+      studio: this.buildStudio(studio, linksByStudioId.get(studio.id) ?? [], followerCountByStudioId.get(studio.id) ?? 0)
     };
   }
 
@@ -1933,13 +2178,14 @@ export class WorkerAppService {
     const memberships = await this.getStudioMembershipsForUser(user.appUser.id);
     const studios = memberships.length > 0 ? await this.getStudiosByIds(memberships.map((membership) => membership.studio_id)) : [];
     const linksByStudioId = await this.getStudioLinksByStudioIds(studios.map((studio) => studio.id));
+    const followerCountByStudioId = await this.getStudioFollowerCounts(studios.map((studio) => studio.id));
     const roleByStudioId = new Map(memberships.map((membership) => [membership.studio_id, membership.role]));
 
     return {
       studios: studios
         .sort((left, right) => left.display_name.localeCompare(right.display_name))
         .map((studio) => ({
-          ...this.buildStudioSummary(studio, linksByStudioId.get(studio.id) ?? []),
+          ...this.buildStudioSummary(studio, linksByStudioId.get(studio.id) ?? [], followerCountByStudioId.get(studio.id) ?? 0),
           role: roleByStudioId.get(studio.id) ?? "editor"
         }))
     };
@@ -1990,7 +2236,7 @@ export class WorkerAppService {
     }
 
     return {
-      studio: this.buildStudio(studio, [])
+      studio: this.buildStudio(studio, [], 0)
     };
   }
 
@@ -2023,8 +2269,9 @@ export class WorkerAppService {
 
     const refreshedStudio = await this.getStudioById(studio.id);
     const links = (await this.getStudioLinksByStudioIds([studio.id])).get(studio.id) ?? [];
+    const followerCountByStudioId = await this.getStudioFollowerCounts([studio.id]);
     return {
-      studio: this.buildStudio(refreshedStudio, links)
+      studio: this.buildStudio(refreshedStudio, links, followerCountByStudioId.get(studio.id) ?? 0)
     };
   }
 
@@ -2152,8 +2399,9 @@ export class WorkerAppService {
 
     const links = (await this.getStudioLinksByStudioIds([studio.id])).get(studio.id) ?? [];
     const refreshedStudio = await this.getStudioById(studio.id);
+    const followerCountByStudioId = await this.getStudioFollowerCounts([studio.id]);
     return {
-      studio: this.buildStudio(refreshedStudio, links)
+      studio: this.buildStudio(refreshedStudio, links, followerCountByStudioId.get(studio.id) ?? 0)
     };
   }
 
@@ -2163,12 +2411,19 @@ export class WorkerAppService {
 
     const studio = await this.getStudioById(studioId);
     const titles = await this.getTitlesByStudioId(studioId);
-    const mediaByTitleId = await this.getTitleMediaByTitleIds(titles.map((title) => title.id));
+    const [mediaByTitleId, currentReleaseById] = await Promise.all([
+      this.getTitleMediaByTitleIds(titles.map((title) => title.id)),
+      this.getTitleReleaseRowsByIds(
+        titles.map((title) => title.current_release_id).filter((value): value is string => Boolean(value))
+      )
+    ]);
 
     return {
       titles: titles
         .sort((left, right) => left.display_name.localeCompare(right.display_name))
-        .map((title) => buildCatalogSummary(title, studio, mediaByTitleId.get(title.id) ?? []))
+        .map((title) =>
+          buildCatalogSummary(title, studio, mediaByTitleId.get(title.id) ?? [], currentReleaseById.get(title.current_release_id ?? ""))
+        )
     };
   }
 
@@ -2188,12 +2443,7 @@ export class WorkerAppService {
     const metadata = input.metadata;
     const genreRows = await this.requireGenres(metadata.genreSlugs);
     const genreDisplay = buildGenreDisplayFromRows(metadata.genreSlugs, genreRows);
-    const ageRatingAuthority = await this.getAgeRatingAuthorityByCode(metadata.ageRatingAuthority);
-    if (!ageRatingAuthority) {
-      throw validationProblem({
-        ageRatingAuthority: [`Unknown age rating authority: ${metadata.ageRatingAuthority}.`]
-      });
-    }
+    const ageRatingAuthorityCode = await this.resolveAgeRatingAuthorityCode(metadata);
     const { data, error } = await this.client
       .from("titles")
       .insert({
@@ -2210,8 +2460,8 @@ export class WorkerAppService {
         genre_display: genreDisplay,
         min_players: metadata.minPlayers,
         max_players: metadata.maxPlayers,
-        age_rating_authority: ageRatingAuthority.code,
-        age_rating_value: metadata.ageRatingValue,
+        age_rating_authority: ageRatingAuthorityCode,
+        age_rating_value: metadata.ageRatingValue?.trim() ? metadata.ageRatingValue.trim() : null,
         min_age_years: metadata.minAgeYears,
         current_release_id: null,
         current_release_version: null,
@@ -2238,8 +2488,8 @@ export class WorkerAppService {
       genre_display: genreDisplay,
       min_players: metadata.minPlayers,
       max_players: metadata.maxPlayers,
-      age_rating_authority: ageRatingAuthority.code,
-      age_rating_value: metadata.ageRatingValue,
+      age_rating_authority: ageRatingAuthorityCode,
+      age_rating_value: metadata.ageRatingValue?.trim() ? metadata.ageRatingValue.trim() : null,
       min_age_years: metadata.minAgeYears,
       created_at: now,
       updated_at: now
@@ -2296,11 +2546,6 @@ export class WorkerAppService {
       return {
         title: await this.getDeveloperTitleDetails(user.appUser.id, title.id)
       };
-    }
-
-    const releases = await this.getTitleReleaseRows(title.id);
-    if (releases.length === 0) {
-      throw problem(409, "title_release_required", "Title cannot be activated.", "Create at least one release before activating this title.");
     }
 
     const { error } = await this.client
@@ -2402,15 +2647,10 @@ export class WorkerAppService {
     const now = new Date().toISOString();
     const genreRows = await this.requireGenres(input.genreSlugs);
     const genreDisplay = buildGenreDisplayFromRows(input.genreSlugs, genreRows);
-    const ageRatingAuthority = await this.getAgeRatingAuthorityByCode(input.ageRatingAuthority);
-    if (!ageRatingAuthority) {
-      throw validationProblem({
-        ageRatingAuthority: [`Unknown age rating authority: ${input.ageRatingAuthority}.`]
-      });
-    }
+    const ageRatingAuthorityCode = await this.resolveAgeRatingAuthorityCode(input);
     await this.ensureDerivedTitleSlugAvailable(title, input.displayName);
 
-    if (this.titleMetadataMatchesCurrentVersion(currentVersion, currentGenreSlugs, input, genreDisplay, ageRatingAuthority.code)) {
+    if (this.titleMetadataMatchesCurrentVersion(currentVersion, currentGenreSlugs, input, genreDisplay, ageRatingAuthorityCode)) {
       return {
         title: await this.getDeveloperTitleDetails(user.appUser.id, title.id)
       };
@@ -2438,8 +2678,8 @@ export class WorkerAppService {
       genre_display: genreDisplay,
       min_players: input.minPlayers,
       max_players: input.maxPlayers,
-      age_rating_authority: ageRatingAuthority.code,
-      age_rating_value: input.ageRatingValue,
+      age_rating_authority: ageRatingAuthorityCode,
+      age_rating_value: input.ageRatingValue?.trim() ? input.ageRatingValue.trim() : null,
       min_age_years: input.minAgeYears,
       created_at: now,
       updated_at: now
@@ -2501,6 +2741,135 @@ export class WorkerAppService {
     return {
       mediaAssets: (await this.getTitleMediaAssetsForTitle(title.id)).map(mapTitleMediaAsset)
     };
+  }
+
+  async getTitleShowcaseMedia(token: string, titleId: string): Promise<TitleShowcaseMediaListResponse> {
+    const user = await this.requireUser(token);
+    const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
+    return {
+      showcaseMedia: (await this.getTitleShowcaseMediaForTitle(title.id)).map(mapTitleShowcaseMedia)
+    };
+  }
+
+  async createTitleShowcaseMedia(
+    token: string,
+    titleId: string,
+    input: CreateTitleShowcaseMediaRequest
+  ): Promise<TitleShowcaseMediaResponse> {
+    const user = await this.requireUser(token);
+    const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
+    this.validateCreateTitleShowcaseMediaInput(input);
+
+    const now = new Date().toISOString();
+    const { data, error } = await this.client
+      .from("title_showcase_media")
+      .insert({
+        title_id: title.id,
+        kind: input.kind,
+        image_url: null,
+        image_storage_path: null,
+        video_url: input.kind === "external_video" && input.videoUrl?.trim() ? input.videoUrl.trim() : null,
+        alt_text: trimNullableString(input.altText, 280),
+        display_order: input.displayOrder,
+        created_at: now,
+        updated_at: now
+      })
+      .select("*")
+      .single();
+    if (error) {
+      throw problem(500, "title_showcase_media_create_failed", "Title showcase media creation failed.", error.message);
+    }
+
+    return {
+      showcaseMedia: mapTitleShowcaseMedia(data as unknown as TitleShowcaseMediaRow)
+    };
+  }
+
+  async updateTitleShowcaseMedia(
+    token: string,
+    titleId: string,
+    showcaseMediaId: string,
+    input: UpdateTitleShowcaseMediaRequest
+  ): Promise<TitleShowcaseMediaResponse> {
+    const user = await this.requireUser(token);
+    const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
+    const showcaseMedia = await this.requireTitleShowcaseMedia(title.id, showcaseMediaId);
+    this.validateUpdateTitleShowcaseMediaInput(showcaseMedia.kind, input);
+
+    const { data, error } = await this.client
+      .from("title_showcase_media")
+      .update({
+        video_url: showcaseMedia.kind === "external_video" && input.videoUrl?.trim() ? input.videoUrl.trim() : null,
+        alt_text: trimNullableString(input.altText, 280),
+        display_order: input.displayOrder,
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", showcaseMedia.id)
+      .select("*")
+      .single();
+    if (error) {
+      throw problem(500, "title_showcase_media_update_failed", "Title showcase media update failed.", error.message);
+    }
+
+    return {
+      showcaseMedia: mapTitleShowcaseMedia(data as unknown as TitleShowcaseMediaRow)
+    };
+  }
+
+  async uploadTitleShowcaseMediaImage(
+    token: string,
+    titleId: string,
+    showcaseMediaId: string,
+    file: File | null
+  ): Promise<TitleShowcaseMediaResponse> {
+    const user = await this.requireUser(token);
+    const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
+    const showcaseMedia = await this.requireTitleShowcaseMedia(title.id, showcaseMediaId);
+    const validatedFile = this.requireUploadFile(file, "titleHero");
+    const bucket = this.getStorageBucketForSurface("titleHero");
+    const studio = await this.getStudioById(title.studio_id);
+    const extension = this.extensionForMimeType(validatedFile.type);
+    const storagePath = `titles/${studio.slug}/${title.slug}/showcase/${showcaseMedia.id}${extension}`;
+    const { error: uploadError } = await this.client.storage
+      .from(bucket)
+      .upload(storagePath, validatedFile, { contentType: validatedFile.type, upsert: true });
+    if (uploadError) {
+      throw problem(500, "title_showcase_media_upload_failed", "Title showcase media image upload failed.", uploadError.message);
+    }
+
+    const publicUrl = this.client.storage.from(bucket).getPublicUrl(storagePath).data.publicUrl;
+    const { data, error } = await this.client
+      .from("title_showcase_media")
+      .update({
+        image_url: publicUrl,
+        image_storage_path: storagePath,
+        updated_at: new Date().toISOString()
+      })
+      .eq("id", showcaseMedia.id)
+      .select("*")
+      .single();
+    if (error) {
+      throw problem(500, "title_showcase_media_update_failed", "Title showcase media update failed.", error.message);
+    }
+
+    return {
+      showcaseMedia: mapTitleShowcaseMedia(data as unknown as TitleShowcaseMediaRow)
+    };
+  }
+
+  async deleteTitleShowcaseMedia(token: string, titleId: string, showcaseMediaId: string): Promise<void> {
+    const user = await this.requireUser(token);
+    const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
+    await this.requireTitleShowcaseMedia(title.id, showcaseMediaId);
+
+    const { error } = await this.client
+      .from("title_showcase_media")
+      .delete()
+      .eq("id", showcaseMediaId)
+      .eq("title_id", title.id);
+    if (error) {
+      throw problem(500, "title_showcase_media_delete_failed", "Title showcase media delete failed.", error.message);
+    }
   }
 
   async upsertTitleMediaAsset(
@@ -2679,6 +3048,7 @@ export class WorkerAppService {
         version: input.version,
         status: input.status,
         acquisition_url: input.acquisitionUrl?.trim() ? input.acquisitionUrl.trim() : null,
+        expires_at: input.status === "testing" && input.expiresAt?.trim() ? input.expiresAt.trim() : null,
         is_current: false,
         published_at: now,
         created_at: now,
@@ -2713,6 +3083,7 @@ export class WorkerAppService {
         version: input.version,
         status: input.status,
         acquisition_url: input.acquisitionUrl?.trim() ? input.acquisitionUrl.trim() : null,
+        expires_at: input.status === "testing" && input.expiresAt?.trim() ? input.expiresAt.trim() : null,
         updated_at: now
       })
       .eq("id", release.id)
@@ -2775,6 +3146,9 @@ export class WorkerAppService {
     const allStudios = await this.getStudiosByIds(allTitles.map((title) => title.studio_id));
     const studiosById = new Map(allStudios.map((studio) => [studio.id, studio]));
     const mediaByTitleId = await this.getTitleMediaByTitleIds(allTitles.map((title) => title.id));
+    const currentReleaseById = await this.getTitleReleaseRowsByIds(
+      allTitles.map((title) => title.current_release_id).filter((value): value is string => Boolean(value))
+    );
 
     const pageNumber = query.pageNumber ?? 1;
     const pageSize = query.pageSize ?? 12;
@@ -2909,7 +3283,7 @@ export class WorkerAppService {
           throw problem(500, "catalog_join_failed", "Catalog projection failed.", `Studio ${title.studio_id} was not found.`);
         }
 
-        return buildCatalogSummary(title, studio, mediaByTitleId.get(title.id) ?? []);
+        return buildCatalogSummary(title, studio, mediaByTitleId.get(title.id) ?? [], currentReleaseById.get(title.current_release_id ?? ""));
       }),
       paging: {
         pageNumber,
@@ -2940,9 +3314,19 @@ export class WorkerAppService {
       }
     }
 
-    const mediaByTitleId = await this.getTitleMediaByTitleIds([title.id]);
+    const [mediaByTitleId, showcaseByTitleId, currentReleaseById] = await Promise.all([
+      this.getTitleMediaByTitleIds([title.id]),
+      this.getTitleShowcaseMediaByTitleIds([title.id]),
+      this.getTitleReleaseRowsByIds(title.current_release_id ? [title.current_release_id] : []),
+    ]);
     return {
-      title: buildCatalogDetail(title, studio, mediaByTitleId.get(title.id) ?? [])
+      title: buildCatalogDetail(
+        title,
+        studio,
+        mediaByTitleId.get(title.id) ?? [],
+        showcaseByTitleId.get(title.id) ?? [],
+        currentReleaseById.get(title.current_release_id ?? "")
+      )
     };
   }
 
@@ -3387,9 +3771,13 @@ export class WorkerAppService {
   private async getDeveloperTitleDetails(userId: string, titleId: string): Promise<DeveloperTitle> {
     const title = await this.requireDeveloperTitleAccess(userId, titleId);
     const studio = await this.getStudioById(title.studio_id);
-    const mediaRows = await this.getTitleMediaAssetsForTitle(title.id);
-    const genreSlugs = await this.getGenreSlugsForMetadataVersion(title.id, title.current_metadata_revision);
-    return buildDeveloperTitle(title, studio, mediaRows, genreSlugs);
+    const [mediaRows, showcaseRows, genreSlugs, currentReleaseRow] = await Promise.all([
+      this.getTitleMediaAssetsForTitle(title.id),
+      this.getTitleShowcaseMediaForTitle(title.id),
+      this.getGenreSlugsForMetadataVersion(title.id, title.current_metadata_revision),
+      title.current_release_id ? this.requireTitleRelease(title.id, title.current_release_id) : Promise.resolve(null),
+    ]);
+    return buildDeveloperTitle(title, studio, mediaRows, showcaseRows, genreSlugs, currentReleaseRow);
   }
 
   private async requireDeveloperTitleAccess(userId: string, titleId: string): Promise<TitleRow> {
@@ -3469,11 +3857,13 @@ export class WorkerAppService {
     if (input.maxPlayers < input.minPlayers) {
       errors.maxPlayers = ["Maximum players must be greater than or equal to minimum players."];
     }
-    if (!input.ageRatingAuthority?.trim()) {
-      errors.ageRatingAuthority = ["Age rating authority is required."];
+    const ageRatingAuthority = input.ageRatingAuthority?.trim() ?? "";
+    const ageRatingValue = input.ageRatingValue?.trim() ?? "";
+    if (ageRatingAuthority && !ageRatingValue) {
+      errors.ageRatingValue = ["Enter a rating value when an age rating authority is selected."];
     }
-    if (!input.ageRatingValue?.trim()) {
-      errors.ageRatingValue = ["Age rating value is required."];
+    if (!ageRatingAuthority && ageRatingValue) {
+      errors.ageRatingAuthority = ["Select an age rating authority when a rating value is supplied."];
     }
     if (input.minAgeYears < 0) {
       errors.minAgeYears = ["Minimum age must be zero or greater."];
@@ -3505,6 +3895,43 @@ export class WorkerAppService {
     }
   }
 
+  private validateCreateTitleShowcaseMediaInput(input: CreateTitleShowcaseMediaRequest): void {
+    const errors: Record<string, string[]> = {};
+    if (input.kind !== "image" && input.kind !== "external_video") {
+      errors.kind = ["Showcase media type must be either image or external_video."];
+    }
+    if (!Number.isInteger(input.displayOrder) || input.displayOrder < 0) {
+      errors.displayOrder = ["Display order must be a whole number zero or greater."];
+    }
+    if (input.kind === "external_video") {
+      if (!input.videoUrl?.trim() || !isAbsoluteUrl(input.videoUrl)) {
+        errors.videoUrl = ["Video URL must be an absolute URI for external video entries."];
+      }
+    } else if (input.videoUrl?.trim()) {
+      errors.videoUrl = ["Screenshot entries cannot include a video URL."];
+    }
+    if (Object.keys(errors).length > 0) {
+      throw validationProblem(errors);
+    }
+  }
+
+  private validateUpdateTitleShowcaseMediaInput(kind: TitleShowcaseMediaKind, input: UpdateTitleShowcaseMediaRequest): void {
+    const errors: Record<string, string[]> = {};
+    if (!Number.isInteger(input.displayOrder) || input.displayOrder < 0) {
+      errors.displayOrder = ["Display order must be a whole number zero or greater."];
+    }
+    if (kind === "external_video") {
+      if (!input.videoUrl?.trim() || !isAbsoluteUrl(input.videoUrl)) {
+        errors.videoUrl = ["Video URL must be an absolute URI for external video entries."];
+      }
+    } else if (input.videoUrl?.trim()) {
+      errors.videoUrl = ["Screenshot entries cannot include a video URL."];
+    }
+    if (Object.keys(errors).length > 0) {
+      throw validationProblem(errors);
+    }
+  }
+
   private validateTitleReleaseInput(input: UpsertTitleReleaseRequest): void {
     const errors: Record<string, string[]> = {};
     if (!input.version?.trim()) {
@@ -3515,6 +3942,15 @@ export class WorkerAppService {
     }
     if (input.acquisitionUrl?.trim() && !isAbsoluteUrl(input.acquisitionUrl)) {
       errors.acquisitionUrl = ["Acquisition URL must be an absolute URI when supplied."];
+    }
+    if (input.expiresAt?.trim()) {
+      const expiresAt = input.expiresAt.trim();
+      if (Number.isNaN(Date.parse(expiresAt))) {
+        errors.expiresAt = ["Expiration date must be a valid ISO 8601 timestamp when supplied."];
+      }
+    }
+    if (input.status === "production" && input.expiresAt?.trim()) {
+      errors.expiresAt = ["Only testing releases can have an expiration date."];
     }
     if (Object.keys(errors).length > 0) {
       throw validationProblem(errors);
@@ -3575,7 +4011,11 @@ export class WorkerAppService {
     return data as AgeRatingAuthorityRow[];
   }
 
-  private async getAgeRatingAuthorityByCode(authorityCode: string): Promise<AgeRatingAuthorityRow | null> {
+  private async getAgeRatingAuthorityByCode(authorityCode: string | null | undefined): Promise<AgeRatingAuthorityRow | null> {
+    if (!authorityCode?.trim()) {
+      return null;
+    }
+
     const normalizedCode = authorityCode.trim().toUpperCase();
     const { data, error } = await this.client.from("age_rating_authorities").select("code, display_name").eq("code", normalizedCode).limit(1);
     if (error) {
@@ -3583,6 +4023,21 @@ export class WorkerAppService {
     }
 
     return (data as AgeRatingAuthorityRow[])[0] ?? null;
+  }
+
+  private async resolveAgeRatingAuthorityCode(input: UpsertTitleMetadataRequest): Promise<string | null> {
+    if (!input.ageRatingAuthority?.trim()) {
+      return null;
+    }
+
+    const ageRatingAuthority = await this.getAgeRatingAuthorityByCode(input.ageRatingAuthority);
+    if (!ageRatingAuthority) {
+      throw validationProblem({
+        ageRatingAuthority: [`Unknown age rating authority: ${input.ageRatingAuthority}.`]
+      });
+    }
+
+    return ageRatingAuthority.code;
   }
 
   private async getGenresBySlugs(genreSlugs: readonly string[]): Promise<GenreRow[]> {
@@ -3753,10 +4208,11 @@ export class WorkerAppService {
     currentGenreSlugs: readonly string[],
     input: UpsertTitleMetadataRequest,
     genreDisplay: string,
-    ageRatingAuthorityCode: string,
+    ageRatingAuthorityCode: string | null,
   ): boolean {
     const normalizedCurrentGenres = currentGenreSlugs.map((genreSlug) => normalizeGenreSlug(genreSlug)).filter(Boolean);
     const normalizedNextGenres = input.genreSlugs.map((genreSlug) => normalizeGenreSlug(genreSlug)).filter(Boolean);
+    const nextAgeRatingValue = input.ageRatingValue?.trim() ? input.ageRatingValue.trim() : null;
     return (
       currentVersion.display_name === input.displayName &&
       currentVersion.short_description === input.shortDescription &&
@@ -3767,7 +4223,7 @@ export class WorkerAppService {
       currentVersion.min_players === input.minPlayers &&
       currentVersion.max_players === input.maxPlayers &&
       currentVersion.age_rating_authority === ageRatingAuthorityCode &&
-      currentVersion.age_rating_value === input.ageRatingValue &&
+      currentVersion.age_rating_value === nextAgeRatingValue &&
       currentVersion.min_age_years === input.minAgeYears
     );
   }
@@ -3821,6 +4277,39 @@ export class WorkerAppService {
     return data as TitleMediaAssetRow[];
   }
 
+  private async getTitleShowcaseMediaForTitle(titleId: string): Promise<TitleShowcaseMediaRow[]> {
+    const { data, error } = await this.client
+      .from("title_showcase_media")
+      .select("*")
+      .eq("title_id", titleId)
+      .order("display_order", { ascending: true })
+      .order("created_at", { ascending: true });
+    if (error) {
+      throw problem(500, "title_showcase_media_lookup_failed", "Title showcase media lookup failed.", error.message);
+    }
+
+    return data as TitleShowcaseMediaRow[];
+  }
+
+  private async requireTitleShowcaseMedia(titleId: string, showcaseMediaId: string): Promise<TitleShowcaseMediaRow> {
+    const { data, error } = await this.client
+      .from("title_showcase_media")
+      .select("*")
+      .eq("id", showcaseMediaId)
+      .eq("title_id", titleId)
+      .limit(1);
+    if (error) {
+      throw problem(500, "title_showcase_media_lookup_failed", "Title showcase media lookup failed.", error.message);
+    }
+
+    const showcaseMedia = (data as TitleShowcaseMediaRow[])[0];
+    if (!showcaseMedia) {
+      throw problem(404, "title_showcase_media_not_found", "Title showcase media not found.", "The requested title showcase media was not found.");
+    }
+
+    return showcaseMedia;
+  }
+
   private async getTitleReportsByTitleId(titleId: string): Promise<TitleReportRow[]> {
     const { data, error } = await this.client
       .from("title_reports")
@@ -3845,6 +4334,24 @@ export class WorkerAppService {
     }
 
     return data as TitleReleaseRow[];
+  }
+
+  private async getTitleReleaseRowsByIds(releaseIds: string[]): Promise<Map<string, TitleReleaseRow>> {
+    const releaseById = new Map<string, TitleReleaseRow>();
+    if (releaseIds.length === 0) {
+      return releaseById;
+    }
+
+    const { data, error } = await this.client.from("title_releases").select("*").in("id", releaseIds);
+    if (error) {
+      throw problem(500, "title_release_lookup_failed", "Title release lookup failed.", error.message);
+    }
+
+    for (const row of data as TitleReleaseRow[]) {
+      releaseById.set(row.id, row);
+    }
+
+    return releaseById;
   }
 
   private async requireTitleRelease(titleId: string, releaseId: string): Promise<TitleReleaseRow> {
@@ -4032,7 +4539,7 @@ export class WorkerAppService {
     return linksByStudioId;
   }
 
-  private buildStudioSummary(studio: StudioRow, links: StudioLinkRow[]): Studio {
+  private buildStudioSummary(studio: StudioRow, links: StudioLinkRow[], followerCount: number): Studio {
     return {
       id: studio.id,
       slug: studio.slug,
@@ -4041,14 +4548,15 @@ export class WorkerAppService {
       avatarUrl: studio.avatar_url,
       logoUrl: studio.logo_url,
       bannerUrl: studio.banner_url,
+      followerCount,
       links: links.map(mapStudioLink),
       createdAt: studio.created_at,
       updatedAt: studio.updated_at
     };
   }
 
-  private buildStudio(studio: StudioRow, links: StudioLinkRow[]): Studio {
-    return this.buildStudioSummary(studio, links);
+  private buildStudio(studio: StudioRow, links: StudioLinkRow[], followerCount: number): Studio {
+    return this.buildStudioSummary(studio, links, followerCount);
   }
 
   private async requireStudioLink(studioId: string, linkId: string): Promise<void> {
@@ -4136,7 +4644,7 @@ export class WorkerAppService {
   }
 
   private buildDeveloperReportActionUrl(titleId: string, reportId: string): string {
-    return `/develop?domain=titles&workflow=titles-reports&titleId=${encodeURIComponent(titleId)}&reportId=${encodeURIComponent(reportId)}`;
+    return `/developer?domain=titles&workflow=titles-reports&titleId=${encodeURIComponent(titleId)}&reportId=${encodeURIComponent(reportId)}`;
   }
 
   private buildModerationReportActionUrl(reportId: string): string {
@@ -4161,7 +4669,7 @@ export class WorkerAppService {
       this.createNotifications(studioManagers.filter((userId) => userId !== reporter.id), {
         category: "title_report",
         title: "A player reported your title",
-        body: `${reporterName} reported ${title.display_name}. Review the report thread and respond from Develop.`,
+        body: `${reporterName} reported ${title.display_name}. Review the report thread and respond from the Developer workspace.`,
         action_url: this.buildDeveloperReportActionUrl(title.id, report.id)
       })
     ]);
@@ -4186,7 +4694,7 @@ export class WorkerAppService {
       this.createNotifications(studioManagers.filter((userId) => userId !== author.id), {
         category: "title_report",
         title: "Player follow-up received",
-        body: `${authorName} replied about ${title.display_name}. Review the latest message in Develop.`,
+        body: `${authorName} replied about ${title.display_name}. Review the latest message in the Developer workspace.`,
         action_url: this.buildDeveloperReportActionUrl(title.id, report.id)
       })
     ]);
@@ -4277,6 +4785,9 @@ export class WorkerAppService {
     const titles = await this.getTitlesByIds(titleIds);
     const studios = await this.getStudiosByIds(titles.map((title) => title.studio_id));
     const mediaByTitleId = await this.getTitleMediaByTitleIds(titleIds);
+    const currentReleaseById = await this.getTitleReleaseRowsByIds(
+      titles.map((title) => title.current_release_id).filter((value): value is string => Boolean(value))
+    );
     const studioById = new Map(studios.map((studio) => [studio.id, studio]));
     const titleById = new Map(titles.map((title) => [title.id, title]));
 
@@ -4292,7 +4803,7 @@ export class WorkerAppService {
           return null;
         }
 
-        return buildCatalogSummary(title, studio, mediaByTitleId.get(title.id) ?? []);
+        return buildCatalogSummary(title, studio, mediaByTitleId.get(title.id) ?? [], currentReleaseById.get(title.current_release_id ?? ""));
       })
       .filter((title): title is CatalogTitleSummary => Boolean(title));
   }
@@ -4306,6 +4817,17 @@ export class WorkerAppService {
     const title = await this.getTitleById(titleId);
     if (included && !isPublicCatalogDetail(title)) {
       throw problem(404, "catalog_title_not_found", "Catalog title not found", "The requested title was not found.");
+    }
+    if (included && kind === "library") {
+      const currentRelease = title.current_release_id ? await this.requireTitleRelease(title.id, title.current_release_id) : null;
+      if (!isReleasePubliclyAvailable(currentRelease) || !title.acquisition_url) {
+        throw problem(
+          409,
+          "title_not_available_for_library",
+          "Title is not available yet.",
+          "This title is visible now, but it is not available to add to your library yet."
+        );
+      }
     }
 
     const tableName = kind === "library" ? "player_library_titles" : "player_wishlist_titles";
@@ -4359,6 +4881,100 @@ export class WorkerAppService {
     }
 
     return data as PlayerWishlistRow[];
+  }
+
+  private async getPlayerFollowedStudioRows(userId: string, studioIds?: string[]): Promise<PlayerFollowedStudioRow[]> {
+    let query = this.client.from("player_followed_studios").select("*").eq("user_id", userId);
+    if (studioIds && studioIds.length > 0) {
+      query = query.in("studio_id", studioIds);
+    }
+    const { data, error } = await query.order("created_at", { ascending: false });
+    if (error) {
+      throw problem(500, "player_followed_studio_lookup_failed", "Player followed studio lookup failed.", error.message);
+    }
+
+    return data as PlayerFollowedStudioRow[];
+  }
+
+  private async getStudioFollowerCounts(studioIds: string[]): Promise<Map<string, number>> {
+    const followerCountByStudioId = new Map<string, number>();
+    if (studioIds.length === 0) {
+      return followerCountByStudioId;
+    }
+
+    const { data, error } = await this.client
+      .from("player_followed_studios")
+      .select("studio_id")
+      .in("studio_id", studioIds);
+    if (error) {
+      throw problem(500, "studio_follow_lookup_failed", "Studio follow lookup failed.", error.message);
+    }
+
+    for (const studioId of studioIds) {
+      followerCountByStudioId.set(studioId, 0);
+    }
+
+    for (const row of data as Array<{ studio_id: string }>) {
+      followerCountByStudioId.set(row.studio_id, (followerCountByStudioId.get(row.studio_id) ?? 0) + 1);
+    }
+
+    return followerCountByStudioId;
+  }
+
+  private async setPlayerStudioFollowStateByUserId(
+    userId: string,
+    studioId: string,
+    included: boolean
+  ): Promise<PlayerStudioFollowMutationResponse> {
+    await this.getStudioById(studioId);
+    const existingRows = await this.getPlayerFollowedStudioRows(userId, [studioId]);
+    const alreadyIncluded = existingRows.length > 0;
+
+    if (included && !alreadyIncluded) {
+      const { error } = await this.client.from("player_followed_studios").insert({
+        user_id: userId,
+        studio_id: studioId,
+        created_at: new Date().toISOString()
+      });
+      if (error) {
+        throw problem(500, "player_followed_studio_mutation_failed", "Player followed studio update failed.", error.message);
+      }
+    }
+
+    if (!included && alreadyIncluded) {
+      const { error } = await this.client.from("player_followed_studios").delete().eq("user_id", userId).eq("studio_id", studioId);
+      if (error) {
+        throw problem(500, "player_followed_studio_mutation_failed", "Player followed studio update failed.", error.message);
+      }
+    }
+
+    return mapPlayerStudioFollowMutation(studioId, included, alreadyIncluded === included);
+  }
+
+  private async getHomeSpotlightEntryRows(): Promise<HomeSpotlightEntryRow[]> {
+    const { data, error } = await this.client
+      .from("home_spotlight_entries")
+      .select("*")
+      .eq("is_active", true)
+      .order("slot_number", { ascending: true });
+    if (error) {
+      throw problem(500, "home_spotlight_lookup_failed", "Home spotlight lookup failed.", error.message);
+    }
+
+    return (data as HomeSpotlightEntryRow[]).slice(0, 3);
+  }
+
+  private async getHomeOfferingSpotlightRows(): Promise<HomeOfferingSpotlightRow[]> {
+    const { data, error } = await this.client
+      .from("home_offering_spotlight_entries")
+      .select("*")
+      .eq("is_active", true)
+      .order("slot_number", { ascending: true });
+    if (error) {
+      throw problem(500, "home_offering_spotlight_lookup_failed", "Home offering spotlight lookup failed.", error.message);
+    }
+
+    return (data as HomeOfferingSpotlightRow[]).slice(0, 3);
   }
 
   private async getTitleReports(): Promise<TitleReportRow[]> {
@@ -4503,6 +5119,30 @@ export class WorkerAppService {
     }
 
     return mediaByTitleId;
+  }
+
+  private async getTitleShowcaseMediaByTitleIds(titleIds: string[]): Promise<Map<string, TitleShowcaseMediaRow[]>> {
+    const showcaseByTitleId = new Map<string, TitleShowcaseMediaRow[]>();
+    if (titleIds.length === 0) {
+      return showcaseByTitleId;
+    }
+
+    const { data, error } = await this.client.from("title_showcase_media").select("*").in("title_id", titleIds);
+    if (error) {
+      throw problem(500, "title_showcase_media_lookup_failed", "Title showcase media lookup failed.", error.message);
+    }
+
+    for (const row of data as TitleShowcaseMediaRow[]) {
+      const current = showcaseByTitleId.get(row.title_id) ?? [];
+      current.push(row);
+      showcaseByTitleId.set(row.title_id, current);
+    }
+
+    for (const rows of showcaseByTitleId.values()) {
+      rows.sort((left, right) => left.display_order - right.display_order || left.created_at.localeCompare(right.created_at));
+    }
+
+    return showcaseByTitleId;
   }
 
   private async buildTitleReportSummaries(reports: TitleReportRow[]): Promise<TitleReportSummary[]> {

@@ -54,18 +54,26 @@ type StudioLinkRow = {
   updated_at: string;
 };
 
+type PlayerFollowedStudioRow = {
+  user_id: string;
+  studio_id: string;
+  created_at: string;
+};
+
 const tables: {
   app_users: AppUserRow[];
   app_user_roles: AppUserRoleRow[];
   studios: StudioRow[];
   studio_memberships: StudioMembershipRow[];
   studio_links: StudioLinkRow[];
+  player_followed_studios: PlayerFollowedStudioRow[];
 } = {
   app_users: [],
   app_user_roles: [],
   studios: [],
   studio_memberships: [],
   studio_links: [],
+  player_followed_studios: [],
 };
 
 const storageUploads: Array<{ bucket: string; path: string; contentType: string }> = [];
@@ -110,6 +118,7 @@ function resetTables() {
   ];
   tables.studio_memberships = [{ studio_id: "studio-1", user_id: "user-1", role: "owner" }];
   tables.studio_links = [];
+  tables.player_followed_studios = [];
   storageUploads.splice(0, storageUploads.length);
 }
 

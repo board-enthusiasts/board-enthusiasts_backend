@@ -245,6 +245,14 @@ export default {
         );
       }
 
+      if (request.method === "GET" && url.pathname === "/spotlights/home") {
+        return json(await service.listHomeSpotlights(), { headers: responseHeaders });
+      }
+
+      if (request.method === "GET" && url.pathname === "/internal/home-offering-spotlights") {
+        return json(await service.listHomeOfferingSpotlights(), { headers: responseHeaders });
+      }
+
       const catalogMatch = url.pathname.match(/^\/catalog\/([^/]+)\/([^/]+)$/);
       if (request.method === "GET" && catalogMatch) {
         return json(await service.getCatalogTitle(token, catalogMatch[1]!, catalogMatch[2]!), { headers: responseHeaders });
@@ -341,6 +349,19 @@ export default {
 
       if (playerWishlistTitleMatch && request.method === "DELETE") {
         return json(await service.setPlayerWishlistState(token, playerWishlistTitleMatch[1]!, false), { headers: responseHeaders });
+      }
+
+      if (request.method === "GET" && url.pathname === "/player/followed-studios") {
+        return json(await service.getPlayerFollowedStudios(token), { headers: responseHeaders });
+      }
+
+      const playerFollowedStudioMatch = url.pathname.match(/^\/player\/followed-studios\/([^/]+)$/);
+      if (playerFollowedStudioMatch && request.method === "PUT") {
+        return json(await service.setPlayerStudioFollowState(token, playerFollowedStudioMatch[1]!, true), { headers: responseHeaders });
+      }
+
+      if (playerFollowedStudioMatch && request.method === "DELETE") {
+        return json(await service.setPlayerStudioFollowState(token, playerFollowedStudioMatch[1]!, false), { headers: responseHeaders });
       }
 
       if (request.method === "GET" && url.pathname === "/player/reports") {
@@ -537,6 +558,50 @@ export default {
             developerTitleMediaUploadMatch[2]!,
             formData.get("media") as File | null,
             (formData.get("altText") as string | null) ?? null
+          ),
+          { headers: responseHeaders }
+        );
+      }
+
+      const developerTitleShowcaseMediaListMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/showcase-media$/);
+      if (developerTitleShowcaseMediaListMatch && request.method === "GET") {
+        return json(await service.getTitleShowcaseMedia(token, developerTitleShowcaseMediaListMatch[1]!), { headers: responseHeaders });
+      }
+
+      if (developerTitleShowcaseMediaListMatch && request.method === "POST") {
+        return json(await service.createTitleShowcaseMedia(token, developerTitleShowcaseMediaListMatch[1]!, await readJson(request)), {
+          status: 201,
+          headers: responseHeaders
+        });
+      }
+
+      const developerTitleShowcaseMediaMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/showcase-media\/([^/]+)$/);
+      if (developerTitleShowcaseMediaMatch && request.method === "PUT") {
+        return json(
+          await service.updateTitleShowcaseMedia(
+            token,
+            developerTitleShowcaseMediaMatch[1]!,
+            developerTitleShowcaseMediaMatch[2]!,
+            await readJson(request)
+          ),
+          { headers: responseHeaders }
+        );
+      }
+
+      if (developerTitleShowcaseMediaMatch && request.method === "DELETE") {
+        await service.deleteTitleShowcaseMedia(token, developerTitleShowcaseMediaMatch[1]!, developerTitleShowcaseMediaMatch[2]!);
+        return new Response(null, { status: 204, headers: responseHeaders });
+      }
+
+      const developerTitleShowcaseMediaUploadMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/showcase-media\/([^/]+)\/image-upload$/);
+      if (developerTitleShowcaseMediaUploadMatch && request.method === "POST") {
+        const formData = await request.formData();
+        return json(
+          await service.uploadTitleShowcaseMediaImage(
+            token,
+            developerTitleShowcaseMediaUploadMatch[1]!,
+            developerTitleShowcaseMediaUploadMatch[2]!,
+            formData.get("media") as File | null
           ),
           { headers: responseHeaders }
         );
