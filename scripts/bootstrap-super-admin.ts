@@ -66,6 +66,12 @@ function sanitizeUserName(value: string): string {
 function buildOptions(argv: string[]): BootstrapOptions {
   const args = parseArgs(argv);
   const email = requireArg(args, "email").toLowerCase();
+  if ((args.password ?? "").trim()) {
+    throw new Error("The bootstrap super-admin script no longer accepts --password. Pipe the password over stdin instead.");
+  }
+  if ((args["password-stdin"] ?? "").trim().toLowerCase() != "true") {
+    throw new Error("Missing required argument --password-stdin.");
+  }
   const userName = sanitizeUserName(args["user-name"] ?? email.split("@")[0] ?? "admin");
   if (!userName) {
     throw new Error("Unable to derive a valid --user-name for the bootstrap super admin.");
@@ -75,12 +81,26 @@ function buildOptions(argv: string[]): BootstrapOptions {
     supabaseUrl: requireArg(args, "supabase-url"),
     secretKey: requireArg(args, "secret-key"),
     email,
-    password: requireArg(args, "password"),
+    password: "",
     userName,
     displayName: requireArg(args, "display-name"),
     firstName: requireArg(args, "first-name"),
     lastName: requireArg(args, "last-name"),
   };
+}
+
+async function readPasswordFromStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk);
+  }
+
+  const password = Buffer.concat(chunks).toString("utf8").replace(/\r?\n$/, "");
+  if (!password.trim()) {
+    throw new Error("Bootstrap password was not provided on stdin.");
+  }
+
+  return password;
 }
 
 async function findAuthUserByEmail(client: SupabaseClient, email: string): Promise<AuthUserRecord | null> {
@@ -196,6 +216,7 @@ async function ensureRoles(client: SupabaseClient, appUserId: string): Promise<v
 
 async function main(): Promise<void> {
   const options = buildOptions(process.argv.slice(2));
+  options.password = await readPasswordFromStdin();
   const client = createClient(options.supabaseUrl, options.secretKey, {
     auth: {
       autoRefreshToken: false,
