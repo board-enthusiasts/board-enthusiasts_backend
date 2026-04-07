@@ -34,6 +34,10 @@ interface AuthUserRecord {
   email: string;
 }
 
+interface SlotSeedRow {
+  slot_number: number;
+}
+
 function formatErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -297,6 +301,26 @@ function getTitleMediaBucket(options: SeedOptions, mediaRole: "card" | "hero" | 
 
 function bucketSupportsMimeType(bucketPolicy: { acceptedMimeTypes: readonly string[] }, mimeType: string): boolean {
   return bucketPolicy.acceptedMimeTypes.includes(mimeType);
+}
+
+export function filterRowsForAvailableSlots<T extends SlotSeedRow>(rows: readonly T[], occupiedSlotNumbers: readonly number[]): T[] {
+  const occupied = new Set(occupiedSlotNumbers);
+  return rows.filter((row) => !occupied.has(row.slot_number));
+}
+
+async function listOccupiedSlots(client: SupabaseClient, tableName: "home_spotlight_entries" | "home_offering_spotlight_entries", slotNumbers: readonly number[]): Promise<number[]> {
+  if (slotNumbers.length === 0) {
+    return [];
+  }
+
+  const { data, error } = await client.from(tableName).select("slot_number").in("slot_number", [...slotNumbers]);
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? [])
+    .map((row) => Number(row.slot_number))
+    .filter((slotNumber) => Number.isInteger(slotNumber));
 }
 
 async function ensureAuthUsers(client: SupabaseClient, password: string): Promise<Map<string, AuthUserRecord>> {
@@ -783,8 +807,14 @@ async function seedOnce(options: SeedOptions): Promise<void> {
     { slot_number: 2, title_id: titleIdsBySlug.get("lantern-drift"), is_active: true },
     { slot_number: 3, title_id: titleIdsBySlug.get("cascade-courier"), is_active: true }
   ].filter((row): row is { slot_number: number; title_id: string; is_active: boolean } => Boolean(row.title_id));
-  if (homeSpotlightRows.length > 0) {
-    const { error: homeSpotlightError } = await client.from("home_spotlight_entries").upsert(homeSpotlightRows, {
+  const insertableHomeSpotlightRows = options.additive
+    ? filterRowsForAvailableSlots(
+        homeSpotlightRows,
+        await listOccupiedSlots(client, "home_spotlight_entries", homeSpotlightRows.map((row) => row.slot_number))
+      )
+    : homeSpotlightRows;
+  if (insertableHomeSpotlightRows.length > 0) {
+    const { error: homeSpotlightError } = await client.from("home_spotlight_entries").upsert(insertableHomeSpotlightRows, {
       onConflict: "slot_number"
     });
     if (homeSpotlightError) {
@@ -830,11 +860,23 @@ async function seedOnce(options: SeedOptions): Promise<void> {
       is_active: true
     }
   ] as const;
-  const { error: homeOfferingSpotlightError } = await client.from("home_offering_spotlight_entries").upsert(homeOfferingSpotlightRows, {
-    onConflict: "slot_number"
-  });
-  if (homeOfferingSpotlightError) {
-    throw homeOfferingSpotlightError;
+  const insertableHomeOfferingSpotlightRows = options.additive
+    ? filterRowsForAvailableSlots(
+        homeOfferingSpotlightRows,
+        await listOccupiedSlots(
+          client,
+          "home_offering_spotlight_entries",
+          homeOfferingSpotlightRows.map((row) => row.slot_number)
+        )
+      )
+    : [...homeOfferingSpotlightRows];
+  if (insertableHomeOfferingSpotlightRows.length > 0) {
+    const { error: homeOfferingSpotlightError } = await client.from("home_offering_spotlight_entries").upsert(insertableHomeOfferingSpotlightRows, {
+      onConflict: "slot_number"
+    });
+    if (homeOfferingSpotlightError) {
+      throw homeOfferingSpotlightError;
+    }
   }
 
   const avaUserId = appUsersByUserName.get("ava.garcia");

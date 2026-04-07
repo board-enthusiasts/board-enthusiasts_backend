@@ -312,6 +312,11 @@ export default {
         return json(await service.getCurrentUserNotifications(token), { headers: responseHeaders });
       }
 
+      if (request.method === "DELETE" && url.pathname === "/identity/me/notifications") {
+        await service.clearCurrentUserNotifications(token);
+        return new Response(null, { status: 204, headers: responseHeaders });
+      }
+
       const currentUserNotificationReadMatch = url.pathname.match(/^\/identity\/me\/notifications\/([^/]+)\/read$/);
       if (currentUserNotificationReadMatch && request.method === "POST") {
         return json(await service.markCurrentUserNotificationRead(token, currentUserNotificationReadMatch[1]!), { headers: responseHeaders });

@@ -288,6 +288,11 @@ type PlayerFollowedStudioRow = {
   created_at: string;
 };
 
+type TitleCollectionCounts = {
+  wishlistCount: number;
+  libraryCount: number;
+};
+
 type HomeOfferingSpotlightRow = {
   slot_number: number;
   eyebrow: string;
@@ -769,7 +774,8 @@ function buildCatalogSummary(
   title: TitleRow,
   studio: StudioRow,
   mediaRows: TitleMediaAssetRow[],
-  currentReleaseRow?: TitleReleaseRow | null
+  currentReleaseRow?: TitleReleaseRow | null,
+  collectionCounts: TitleCollectionCounts = { wishlistCount: 0, libraryCount: 0 }
 ): CatalogTitleSummary {
   const cardImageUrl = mediaRows.find((row) => row.media_role === "card")?.source_url ?? null;
   const logoImageUrl = mediaRows.find((row) => row.media_role === "logo")?.source_url ?? null;
@@ -794,6 +800,8 @@ function buildCatalogSummary(
     ageRatingValue: title.age_rating_value,
     minAgeYears: title.min_age_years,
     ageDisplay: buildAgeDisplay(title.age_rating_authority, title.age_rating_value),
+    wishlistCount: collectionCounts.wishlistCount,
+    libraryCount: collectionCounts.libraryCount,
     cardImageUrl,
     logoImageUrl,
     acquisitionUrl: isPublicCatalogDetail(title) && isReleasePubliclyAvailable(currentReleaseRow) ? title.acquisition_url : null
@@ -805,10 +813,11 @@ function buildCatalogDetail(
   studio: StudioRow,
   mediaRows: TitleMediaAssetRow[],
   showcaseRows: TitleShowcaseMediaRow[],
-  currentReleaseRow?: TitleReleaseRow | null
+  currentReleaseRow?: TitleReleaseRow | null,
+  collectionCounts: TitleCollectionCounts = { wishlistCount: 0, libraryCount: 0 }
 ): CatalogTitle {
   return {
-    ...buildCatalogSummary(title, studio, mediaRows, currentReleaseRow),
+    ...buildCatalogSummary(title, studio, mediaRows, currentReleaseRow, collectionCounts),
     description: title.description,
     mediaAssets: mediaRows.map(mapTitleMediaAsset),
     showcaseMedia: showcaseRows.filter(isRenderableShowcaseMedia).map(mapTitleShowcaseMedia),
@@ -825,7 +834,8 @@ function buildDeveloperTitle(
   mediaRows: TitleMediaAssetRow[],
   showcaseRows: TitleShowcaseMediaRow[],
   genreSlugs: string[],
-  currentReleaseRow?: TitleReleaseRow | null
+  currentReleaseRow?: TitleReleaseRow | null,
+  collectionCounts: TitleCollectionCounts = { wishlistCount: 0, libraryCount: 0 }
 ): DeveloperTitle {
   return {
     id: title.id,
@@ -848,6 +858,8 @@ function buildDeveloperTitle(
     ageRatingValue: title.age_rating_value,
     minAgeYears: title.min_age_years,
     ageDisplay: buildAgeDisplay(title.age_rating_authority, title.age_rating_value),
+    wishlistCount: collectionCounts.wishlistCount,
+    libraryCount: collectionCounts.libraryCount,
     cardImageUrl: mediaRows.find((row) => row.media_role === "card")?.source_url ?? null,
     acquisitionUrl: title.acquisition_url,
     mediaAssets: mediaRows.map(mapTitleMediaAsset),
@@ -1609,6 +1621,17 @@ export class WorkerAppService {
     return {
       notifications: (data as UserNotificationRow[]).map(mapUserNotification)
     };
+  }
+
+  async clearCurrentUserNotifications(token: string): Promise<void> {
+    const user = await this.requireUser(token);
+    const { error } = await this.client
+      .from("user_notifications")
+      .delete()
+      .eq("user_id", user.appUser.id);
+    if (error) {
+      throw problem(500, "notification_clear_failed", "Notification clear failed.", error.message);
+    }
   }
 
   async markCurrentUserNotificationRead(token: string, notificationId: string): Promise<UserNotificationResponse> {
@@ -2411,18 +2434,25 @@ export class WorkerAppService {
 
     const studio = await this.getStudioById(studioId);
     const titles = await this.getTitlesByStudioId(studioId);
-    const [mediaByTitleId, currentReleaseById] = await Promise.all([
+    const [mediaByTitleId, currentReleaseById, collectionCountsByTitleId] = await Promise.all([
       this.getTitleMediaByTitleIds(titles.map((title) => title.id)),
       this.getTitleReleaseRowsByIds(
         titles.map((title) => title.current_release_id).filter((value): value is string => Boolean(value))
-      )
+      ),
+      this.getTitleCollectionCounts(titles.map((title) => title.id)),
     ]);
 
     return {
       titles: titles
         .sort((left, right) => left.display_name.localeCompare(right.display_name))
         .map((title) =>
-          buildCatalogSummary(title, studio, mediaByTitleId.get(title.id) ?? [], currentReleaseById.get(title.current_release_id ?? ""))
+          buildCatalogSummary(
+            title,
+            studio,
+            mediaByTitleId.get(title.id) ?? [],
+            currentReleaseById.get(title.current_release_id ?? ""),
+            collectionCountsByTitleId.get(title.id),
+          )
         )
     };
   }
@@ -3275,6 +3305,7 @@ export class WorkerAppService {
     const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
     const sliceStart = (pageNumber - 1) * pageSize;
     const pagedTitles = matchingTitles.slice(sliceStart, sliceStart + pageSize);
+    const collectionCountsByTitleId = await this.getTitleCollectionCounts(pagedTitles.map((title) => title.id));
 
     return {
       titles: pagedTitles.map((title) => {
@@ -3283,7 +3314,13 @@ export class WorkerAppService {
           throw problem(500, "catalog_join_failed", "Catalog projection failed.", `Studio ${title.studio_id} was not found.`);
         }
 
-        return buildCatalogSummary(title, studio, mediaByTitleId.get(title.id) ?? [], currentReleaseById.get(title.current_release_id ?? ""));
+        return buildCatalogSummary(
+          title,
+          studio,
+          mediaByTitleId.get(title.id) ?? [],
+          currentReleaseById.get(title.current_release_id ?? ""),
+          collectionCountsByTitleId.get(title.id),
+        );
       }),
       paging: {
         pageNumber,
@@ -3314,10 +3351,11 @@ export class WorkerAppService {
       }
     }
 
-    const [mediaByTitleId, showcaseByTitleId, currentReleaseById] = await Promise.all([
+    const [mediaByTitleId, showcaseByTitleId, currentReleaseById, collectionCountsByTitleId] = await Promise.all([
       this.getTitleMediaByTitleIds([title.id]),
       this.getTitleShowcaseMediaByTitleIds([title.id]),
       this.getTitleReleaseRowsByIds(title.current_release_id ? [title.current_release_id] : []),
+      this.getTitleCollectionCounts([title.id]),
     ]);
     return {
       title: buildCatalogDetail(
@@ -3325,7 +3363,8 @@ export class WorkerAppService {
         studio,
         mediaByTitleId.get(title.id) ?? [],
         showcaseByTitleId.get(title.id) ?? [],
-        currentReleaseById.get(title.current_release_id ?? "")
+        currentReleaseById.get(title.current_release_id ?? ""),
+        collectionCountsByTitleId.get(title.id),
       )
     };
   }
@@ -3771,13 +3810,14 @@ export class WorkerAppService {
   private async getDeveloperTitleDetails(userId: string, titleId: string): Promise<DeveloperTitle> {
     const title = await this.requireDeveloperTitleAccess(userId, titleId);
     const studio = await this.getStudioById(title.studio_id);
-    const [mediaRows, showcaseRows, genreSlugs, currentReleaseRow] = await Promise.all([
+    const [mediaRows, showcaseRows, genreSlugs, currentReleaseRow, collectionCountsByTitleId] = await Promise.all([
       this.getTitleMediaAssetsForTitle(title.id),
       this.getTitleShowcaseMediaForTitle(title.id),
       this.getGenreSlugsForMetadataVersion(title.id, title.current_metadata_revision),
       title.current_release_id ? this.requireTitleRelease(title.id, title.current_release_id) : Promise.resolve(null),
+      this.getTitleCollectionCounts([title.id]),
     ]);
-    return buildDeveloperTitle(title, studio, mediaRows, showcaseRows, genreSlugs, currentReleaseRow);
+    return buildDeveloperTitle(title, studio, mediaRows, showcaseRows, genreSlugs, currentReleaseRow, collectionCountsByTitleId.get(title.id));
   }
 
   private async requireDeveloperTitleAccess(userId: string, titleId: string): Promise<TitleRow> {
@@ -4921,6 +4961,43 @@ export class WorkerAppService {
     return followerCountByStudioId;
   }
 
+  private async getTitleCollectionCounts(titleIds: string[]): Promise<Map<string, TitleCollectionCounts>> {
+    const countsByTitleId = new Map<string, TitleCollectionCounts>();
+    for (const titleId of titleIds) {
+      countsByTitleId.set(titleId, { wishlistCount: 0, libraryCount: 0 });
+    }
+    if (titleIds.length === 0) {
+      return countsByTitleId;
+    }
+
+    const [{ data: wishlistRows, error: wishlistError }, { data: libraryRows, error: libraryError }] = await Promise.all([
+      this.client.from("player_wishlist_titles").select("title_id").in("title_id", titleIds),
+      this.client.from("player_library_titles").select("title_id").in("title_id", titleIds),
+    ]);
+    if (wishlistError) {
+      throw problem(500, "title_wishlist_count_lookup_failed", "Title analytics lookup failed.", wishlistError.message);
+    }
+    if (libraryError) {
+      throw problem(500, "title_library_count_lookup_failed", "Title analytics lookup failed.", libraryError.message);
+    }
+
+    for (const row of (wishlistRows as PlayerWishlistRow[] | null) ?? []) {
+      const current = countsByTitleId.get(row.title_id);
+      if (current) {
+        current.wishlistCount += 1;
+      }
+    }
+
+    for (const row of (libraryRows as PlayerLibraryRow[] | null) ?? []) {
+      const current = countsByTitleId.get(row.title_id);
+      if (current) {
+        current.libraryCount += 1;
+      }
+    }
+
+    return countsByTitleId;
+  }
+
   private async setPlayerStudioFollowStateByUserId(
     userId: string,
     studioId: string,
@@ -5163,29 +5240,25 @@ export class WorkerAppService {
     const messageCounts = await this.getTitleReportMessageCounts(reports.map((report) => report.id));
 
     const summaries = reports
-      .map((report): TitleReportSummary | null => {
+      .map((report): TitleReportSummary => {
         const title = titleById.get(report.title_id);
         const studio = title ? studioById.get(title.studio_id) : null;
         const reporter = userById.get(report.reporter_user_id);
-        if (!title || !studio || !reporter) {
-          return null;
-        }
-
         return {
           id: report.id,
-          titleId: title.id,
-          studioId: studio.id,
-          studioSlug: studio.slug,
-          studioDisplayName: studio.display_name,
-          titleSlug: title.slug,
-          titleDisplayName: title.display_name,
-          titleShortDescription: title.short_description,
-          genreDisplay: title.genre_display,
-          currentMetadataRevision: title.current_metadata_revision,
-          reporterSubject: reporter.auth_user_id,
-          reporterUserName: reporter.user_name,
-          reporterDisplayName: reporter.display_name,
-          reporterEmail: reporter.email,
+          titleId: title?.id ?? report.title_id,
+          studioId: studio?.id ?? title?.studio_id ?? `unknown-studio:${report.id}`,
+          studioSlug: studio?.slug ?? "unknown-studio",
+          studioDisplayName: studio?.display_name ?? "Unavailable studio",
+          titleSlug: title?.slug ?? "unknown-title",
+          titleDisplayName: title?.display_name ?? "Unavailable title",
+          titleShortDescription: title?.short_description ?? "The original title details are no longer available.",
+          genreDisplay: title?.genre_display ?? "Unknown",
+          currentMetadataRevision: title?.current_metadata_revision ?? 0,
+          reporterSubject: reporter?.auth_user_id ?? `deleted-user:${report.reporter_user_id}`,
+          reporterUserName: reporter?.user_name ?? null,
+          reporterDisplayName: reporter?.display_name ?? null,
+          reporterEmail: reporter?.email ?? null,
           status: report.status,
           reason: report.reason,
           createdAt: report.created_at,
@@ -5194,7 +5267,6 @@ export class WorkerAppService {
           messageCount: messageCounts.get(report.id) ?? 0
         } satisfies TitleReportSummary;
       })
-      .filter((report): report is TitleReportSummary => report !== null);
 
     return summaries.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
@@ -5220,25 +5292,21 @@ export class WorkerAppService {
       resolutionNote: report.resolution_note,
       resolvedBy: resolvedByUser ? this.buildTitleReportActor(resolvedByUser) : null,
       messages: messages
-        .map((message): TitleReportMessage | null => {
+        .map((message): TitleReportMessage => {
           const author = userById.get(message.author_user_id);
-          if (!author) {
-            return null;
-          }
 
           return {
             id: message.id,
-            authorSubject: author.auth_user_id,
-            authorUserName: author.user_name,
-            authorDisplayName: author.display_name,
-            authorEmail: author.email,
+            authorSubject: author?.auth_user_id ?? `deleted-user:${message.author_user_id}`,
+            authorUserName: author?.user_name ?? null,
+            authorDisplayName: author?.display_name ?? null,
+            authorEmail: author?.email ?? null,
             authorRole: message.author_role,
             audience: message.audience,
             message: message.message,
             createdAt: message.created_at
           } satisfies TitleReportMessage;
         })
-        .filter((message): message is TitleReportMessage => message !== null)
     };
   }
 

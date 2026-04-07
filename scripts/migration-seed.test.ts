@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildStableSeedUuid, buildSupabaseReadyProbeHeaders } from "./migration-seed";
+import { buildStableSeedUuid, buildSupabaseReadyProbeHeaders, filterRowsForAvailableSlots } from "./migration-seed";
 
 test("buildSupabaseReadyProbeHeaders includes the service-role api key for all probes", () => {
   const headers = buildSupabaseReadyProbeHeaders("service-role-secret");
@@ -21,4 +21,17 @@ test("buildStableSeedUuid stays deterministic and UUID-shaped for additive seed 
   assert.equal(first, second);
   assert.notEqual(first, different);
   assert.match(first, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+});
+
+test("filterRowsForAvailableSlots preserves rows only for empty spotlight slots", () => {
+  const rows = [
+    { slot_number: 1, title: "One" },
+    { slot_number: 2, title: "Two" },
+    { slot_number: 3, title: "Three" },
+  ];
+
+  assert.deepEqual(filterRowsForAvailableSlots(rows, [2]), [
+    { slot_number: 1, title: "One" },
+    { slot_number: 3, title: "Three" },
+  ]);
 });

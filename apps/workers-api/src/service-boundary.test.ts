@@ -63,18 +63,33 @@ type TitleRow = {
   updated_at: string;
 };
 
+type UserNotificationRow = {
+  id: string;
+  user_id: string;
+  category: string;
+  title: string;
+  body: string;
+  action_url: string | null;
+  is_read: boolean;
+  read_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 const tables: {
   marketing_contacts: MarketingContactRow[];
   marketing_contact_role_interests: RoleInterestRow[];
   app_users: AppUserRow[];
   app_user_roles: AppUserRoleRow[];
   titles: TitleRow[];
+  user_notifications: UserNotificationRow[];
 } = {
   marketing_contacts: [],
   marketing_contact_role_interests: [],
   app_users: [],
   app_user_roles: [],
   titles: [],
+  user_notifications: [],
 };
 
 function resetTables() {
@@ -83,6 +98,7 @@ function resetTables() {
   tables.app_users = [];
   tables.app_user_roles = [];
   tables.titles = [];
+  tables.user_notifications = [];
 }
 
 const supabaseAuthMocks = vi.hoisted(() => ({
@@ -1104,6 +1120,359 @@ describe("WorkerAppService.unarchiveTitle", () => {
       lifecycle_status: "draft",
       visibility: "unlisted",
     });
+  });
+});
+
+describe("WorkerAppService title analytics projections", () => {
+  beforeEach(() => {
+    resetTables();
+    vi.restoreAllMocks();
+    supabaseAuthMocks.getUser.mockReset();
+    supabaseAuthMocks.updateUserById.mockReset();
+    supabaseAuthMocks.listUsers.mockReset();
+    supabaseAuthMocks.signInWithPassword.mockReset();
+  });
+
+  it("includes wishlist and library counts in catalog title detail responses", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "getStudioBySlug" as never).mockResolvedValue({
+      id: "studio-1",
+      slug: "blue-harbor-games",
+      display_name: "Blue Harbor Games",
+    });
+    vi.spyOn(service as never, "getTitleByStudioAndSlug" as never).mockResolvedValue({
+      id: "title-1",
+      studio_id: "studio-1",
+      slug: "lantern-drift",
+      content_kind: "game",
+      lifecycle_status: "active",
+      visibility: "listed",
+      is_reported: false,
+      current_metadata_revision: 2,
+      display_name: "Lantern Drift",
+      short_description: "Guide glowing paper boats through midnight canals.",
+      description: "Tilt waterways, spin lock-gates, and weave through fireworks across the river.",
+      genre_display: "Puzzle, Family",
+      min_players: 1,
+      max_players: 4,
+      age_rating_authority: "ESRB",
+      age_rating_value: "E",
+      min_age_years: 6,
+      current_release_id: "release-1",
+      current_release_version: "1.0.0",
+      current_release_published_at: "2026-03-08T12:00:00Z",
+      acquisition_url: "https://example.com/lantern-drift",
+      created_at: "2026-03-08T12:00:00Z",
+      updated_at: "2026-03-08T12:00:00Z",
+    });
+    vi.spyOn(service as never, "getTitleMediaByTitleIds" as never).mockResolvedValue(new Map([["title-1", []]]));
+    vi.spyOn(service as never, "getTitleShowcaseMediaByTitleIds" as never).mockResolvedValue(new Map([["title-1", []]]));
+    vi.spyOn(service as never, "getTitleReleaseRowsByIds" as never).mockResolvedValue(new Map([["release-1", {
+      id: "release-1",
+      title_id: "title-1",
+      version: "1.0.0",
+      status: "production",
+      acquisition_url: "https://example.com/lantern-drift",
+      expires_at: null,
+      is_current: true,
+      published_at: "2026-03-08T12:00:00Z",
+      created_at: "2026-03-08T12:00:00Z",
+      updated_at: "2026-03-08T12:00:00Z",
+    }]]));
+    vi.spyOn(service as never, "getTitleCollectionCounts" as never).mockResolvedValue(new Map([["title-1", { wishlistCount: 24, libraryCount: 9 }]]));
+
+    await expect(service.getCatalogTitle(null, "blue-harbor-games", "lantern-drift")).resolves.toEqual(
+      expect.objectContaining({
+        title: expect.objectContaining({
+          id: "title-1",
+          wishlistCount: 24,
+          libraryCount: 9,
+        }),
+      }),
+    );
+  });
+
+  it("includes wishlist and library counts in developer title details", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "requireDeveloperTitleAccess" as never).mockResolvedValue({
+      id: "title-1",
+      studio_id: "studio-1",
+      slug: "lantern-drift",
+      content_kind: "game",
+      lifecycle_status: "active",
+      visibility: "listed",
+      is_reported: false,
+      current_metadata_revision: 2,
+      display_name: "Lantern Drift",
+      short_description: "Guide glowing paper boats through midnight canals.",
+      description: "Tilt waterways, spin lock-gates, and weave through fireworks across the river.",
+      genre_display: "Puzzle, Family",
+      min_players: 1,
+      max_players: 4,
+      age_rating_authority: "ESRB",
+      age_rating_value: "E",
+      min_age_years: 6,
+      current_release_id: "release-1",
+      current_release_version: "1.0.0",
+      current_release_published_at: "2026-03-08T12:00:00Z",
+      acquisition_url: "https://example.com/lantern-drift",
+      created_at: "2026-03-08T12:00:00Z",
+      updated_at: "2026-03-08T12:00:00Z",
+    });
+    vi.spyOn(service as never, "getStudioById" as never).mockResolvedValue({
+      id: "studio-1",
+      slug: "blue-harbor-games",
+      display_name: "Blue Harbor Games",
+    });
+    vi.spyOn(service as never, "getTitleMediaAssetsForTitle" as never).mockResolvedValue([]);
+    vi.spyOn(service as never, "getTitleShowcaseMediaForTitle" as never).mockResolvedValue([]);
+    vi.spyOn(service as never, "getGenreSlugsForMetadataVersion" as never).mockResolvedValue(["puzzle", "family"]);
+    vi.spyOn(service as never, "requireTitleRelease" as never).mockResolvedValue({
+      id: "release-1",
+      title_id: "title-1",
+      version: "1.0.0",
+      status: "production",
+      acquisition_url: "https://example.com/lantern-drift",
+      expires_at: null,
+      is_current: true,
+      published_at: "2026-03-08T12:00:00Z",
+      created_at: "2026-03-08T12:00:00Z",
+      updated_at: "2026-03-08T12:00:00Z",
+    });
+    vi.spyOn(service as never, "getTitleCollectionCounts" as never).mockResolvedValue(new Map([["title-1", { wishlistCount: 18, libraryCount: 7 }]]));
+
+    await expect((service as never).getDeveloperTitleDetails("user-1", "title-1")).resolves.toEqual(
+      expect.objectContaining({
+        id: "title-1",
+        wishlistCount: 18,
+        libraryCount: 7,
+      }),
+    );
+  });
+});
+
+describe("WorkerAppService moderation title reports", () => {
+  beforeEach(() => {
+    resetTables();
+    vi.restoreAllMocks();
+    supabaseAuthMocks.getUser.mockReset();
+    supabaseAuthMocks.updateUserById.mockReset();
+    supabaseAuthMocks.listUsers.mockReset();
+    supabaseAuthMocks.signInWithPassword.mockReset();
+  });
+
+  it("keeps moderation report summaries visible when the related title, studio, or reporter records are gone", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: { id: "moderator-user-id" },
+      roles: ["moderator"],
+    });
+    vi.spyOn(service as never, "getTitleReports" as never).mockResolvedValue([
+      {
+        id: "report-1",
+        title_id: "missing-title-id",
+        reporter_user_id: "missing-reporter-id",
+        status: "submitted",
+        reason: "The title metadata looks incorrect.",
+        resolved_at: null,
+        updated_at: "2026-04-07T12:00:00Z",
+        created_at: "2026-04-07T11:00:00Z",
+      },
+    ]);
+    vi.spyOn(service as never, "getTitlesByIds" as never).mockResolvedValue([]);
+    vi.spyOn(service as never, "getStudiosByIds" as never).mockResolvedValue([]);
+    vi.spyOn(service as never, "getUsersByIds" as never).mockResolvedValue([]);
+    vi.spyOn(service as never, "getTitleReportMessageCounts" as never).mockResolvedValue(new Map([["report-1", 3]]));
+
+    await expect(service.listModerationTitleReports("moderator-token")).resolves.toEqual({
+      reports: [
+        expect.objectContaining({
+          id: "report-1",
+          titleId: "missing-title-id",
+          titleDisplayName: "Unavailable title",
+          studioDisplayName: "Unavailable studio",
+          reporterSubject: "deleted-user:missing-reporter-id",
+          messageCount: 3,
+        }),
+      ],
+    });
+  });
+
+  it("keeps moderation report detail messages visible when message authors are gone", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: { id: "moderator-user-id" },
+      roles: ["moderator"],
+    });
+    vi.spyOn(service as never, "getTitleReportById" as never).mockResolvedValue({
+      id: "report-1",
+      title_id: "title-1",
+      reporter_user_id: "reporter-1",
+      resolved_by_user_id: null,
+      status: "developer_responded",
+      reason: "The title page has broken content.",
+      resolution_note: null,
+      resolved_at: null,
+      updated_at: "2026-04-07T12:00:00Z",
+      created_at: "2026-04-07T11:00:00Z",
+    });
+    vi.spyOn(service as never, "getTitlesByIds" as never).mockResolvedValue([
+      {
+        id: "title-1",
+        studio_id: "studio-1",
+        slug: "deploy-smoke-title-revised",
+        display_name: "Deploy Smoke Title Revised",
+        short_description: "Smoke test title.",
+        genre_display: "Utility",
+        current_metadata_revision: 2,
+      },
+    ]);
+    vi.spyOn(service as never, "getStudiosByIds" as never).mockResolvedValue([
+      {
+        id: "studio-1",
+        slug: "production-smoke-studio",
+        display_name: "Production Smoke Studio",
+      },
+    ]);
+    vi.spyOn(service as never, "getUsersByIds" as never).mockImplementation(async (userIds: string[]) => {
+      const knownUsers = userIds
+        .filter((userId) => userId === "reporter-1")
+        .map(() => ({
+          id: "reporter-1",
+          auth_user_id: "auth-reporter-1",
+          user_name: "prod.smoke.player",
+          display_name: "Production Smoke Player",
+          email: "testing+player@boardenthusiasts.com",
+        }));
+      return knownUsers;
+    });
+    vi.spyOn(service as never, "getTitleReportMessages" as never).mockResolvedValue([
+      {
+        id: "message-1",
+        report_id: "report-1",
+        author_user_id: "deleted-developer-id",
+        author_role: "developer",
+        audience: "all",
+        message: "We have reviewed the issue and need more detail.",
+        created_at: "2026-04-07T11:30:00Z",
+      },
+    ]);
+    vi.spyOn(service as never, "getTitleReportMessageCounts" as never).mockResolvedValue(new Map([["report-1", 1]]));
+
+    await expect(service.getModerationTitleReport("moderator-token", "report-1")).resolves.toEqual({
+      report: expect.objectContaining({
+        report: expect.objectContaining({
+          id: "report-1",
+          titleDisplayName: "Deploy Smoke Title Revised",
+          studioDisplayName: "Production Smoke Studio",
+        }),
+        messages: [
+          expect.objectContaining({
+            id: "message-1",
+            authorSubject: "deleted-user:deleted-developer-id",
+            authorDisplayName: null,
+            authorUserName: null,
+            message: "We have reviewed the issue and need more detail.",
+          }),
+        ],
+      }),
+    });
+  });
+});
+
+describe("WorkerAppService current-user notifications", () => {
+  beforeEach(() => {
+    resetTables();
+    vi.restoreAllMocks();
+    supabaseAuthMocks.getUser.mockReset();
+    supabaseAuthMocks.updateUserById.mockReset();
+    supabaseAuthMocks.listUsers.mockReset();
+    supabaseAuthMocks.signInWithPassword.mockReset();
+  });
+
+  it("clears all notifications for the current user", async () => {
+    tables.user_notifications.push(
+      {
+        id: "notification-1",
+        user_id: "user-1",
+        category: "title_report",
+        title: "Unread notification",
+        body: "Unread body",
+        action_url: "/player?workflow=reported-titles&reportId=report-1",
+        is_read: false,
+        read_at: null,
+        created_at: "2026-04-07T11:00:00Z",
+        updated_at: "2026-04-07T11:00:00Z",
+      },
+      {
+        id: "notification-2",
+        user_id: "user-1",
+        category: "title_report",
+        title: "Read notification",
+        body: "Read body",
+        action_url: "/player?workflow=reported-titles&reportId=report-2",
+        is_read: true,
+        read_at: "2026-04-07T11:05:00Z",
+        created_at: "2026-04-07T11:01:00Z",
+        updated_at: "2026-04-07T11:05:00Z",
+      },
+      {
+        id: "notification-3",
+        user_id: "user-2",
+        category: "title_report",
+        title: "Other user notification",
+        body: "Should stay put",
+        action_url: null,
+        is_read: false,
+        read_at: null,
+        created_at: "2026-04-07T11:02:00Z",
+        updated_at: "2026-04-07T11:02:00Z",
+      },
+    );
+
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: { id: "user-1" },
+      roles: ["player"],
+    });
+
+    await expect(service.clearCurrentUserNotifications("player-token")).resolves.toBeUndefined();
+    expect(tables.user_notifications).toEqual([
+      expect.objectContaining({
+        id: "notification-3",
+        user_id: "user-2",
+      }),
+    ]);
   });
 });
 
