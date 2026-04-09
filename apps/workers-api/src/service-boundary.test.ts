@@ -76,6 +76,33 @@ type UserNotificationRow = {
   updated_at: string;
 };
 
+type CatalogMediaEntryRow = {
+  id: string;
+  studio_id: string | null;
+  title_id: string | null;
+  media_type_key: string;
+  kind: string;
+  source_url: string | null;
+  storage_path: string | null;
+  video_url: string | null;
+  alt_text: string | null;
+  mime_type: string | null;
+  width: number | null;
+  height: number | null;
+  display_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type WorkerAppServicePrivateTestAccess = {
+  getDeveloperTitleDetails(userId: string, titleId: string): Promise<Record<string, unknown>>;
+  getUsersByIds(userIds: string[]): Promise<AppUserRow[]>;
+};
+
+function asWorkerAppServicePrivateTestAccess(service: WorkerAppService): WorkerAppServicePrivateTestAccess {
+  return service as unknown as WorkerAppServicePrivateTestAccess;
+}
+
 const tables: {
   marketing_contacts: MarketingContactRow[];
   marketing_contact_role_interests: RoleInterestRow[];
@@ -83,6 +110,7 @@ const tables: {
   app_user_roles: AppUserRoleRow[];
   titles: TitleRow[];
   user_notifications: UserNotificationRow[];
+  catalog_media_entries: CatalogMediaEntryRow[];
 } = {
   marketing_contacts: [],
   marketing_contact_role_interests: [],
@@ -90,6 +118,7 @@ const tables: {
   app_user_roles: [],
   titles: [],
   user_notifications: [],
+  catalog_media_entries: [],
 };
 
 function resetTables() {
@@ -99,6 +128,7 @@ function resetTables() {
   tables.app_user_roles = [];
   tables.titles = [];
   tables.user_notifications = [];
+  tables.catalog_media_entries = [];
 }
 
 const supabaseAuthMocks = vi.hoisted(() => ({
@@ -110,10 +140,40 @@ const supabaseAuthMocks = vi.hoisted(() => ({
 
 function createQueryBuilder(tableName: keyof typeof tables) {
   let filters: Array<{ column: string; value: unknown }> = [];
+  let inclusionFilters: Array<{ column: string; values: unknown[] }> = [];
+  let orderBy: { column: string; ascending: boolean } | null = null;
   let pendingUpdate: Record<string, unknown> | null = null;
 
-  const applyFilters = <TRow extends Record<string, unknown>>(rows: TRow[]) =>
-    rows.filter((row) => filters.every((filter) => row[filter.column] === filter.value));
+  const applyFilters = <TRow extends Record<string, unknown>>(rows: TRow[]) => {
+    const filtered = rows.filter(
+      (row) =>
+        filters.every((filter) => row[filter.column] === filter.value) &&
+        inclusionFilters.every((filter) => filter.values.includes(row[filter.column])),
+    );
+
+    if (!orderBy) {
+      return filtered;
+    }
+
+    const order = orderBy;
+
+    return [...filtered].sort((left, right) => {
+      const leftValue = left[order.column];
+      const rightValue = right[order.column];
+      if (leftValue === rightValue) {
+        return 0;
+      }
+      if (leftValue == null) {
+        return order.ascending ? -1 : 1;
+      }
+      if (rightValue == null) {
+        return order.ascending ? 1 : -1;
+      }
+      return order.ascending
+        ? String(leftValue).localeCompare(String(rightValue))
+        : String(rightValue).localeCompare(String(leftValue));
+    });
+  };
 
   const builder = {
     select(_columns?: string) {
@@ -159,6 +219,14 @@ function createQueryBuilder(tableName: keyof typeof tables) {
         return Promise.resolve({ error: null });
       }
 
+      return builder;
+    },
+    in(column: string, values: unknown[]) {
+      inclusionFilters = [...inclusionFilters, { column, values }];
+      return builder;
+    },
+    order(column: string, options?: { ascending?: boolean }) {
+      orderBy = { column, ascending: options?.ascending ?? true };
       return builder;
     },
     insert(payload: Array<Record<string, unknown>> | Record<string, unknown>) {
@@ -1141,12 +1209,12 @@ describe("WorkerAppService title analytics projections", () => {
       SUPABASE_SECRET_KEY: "secret-key",
     });
 
-    vi.spyOn(service as never, "getStudioBySlug" as never).mockResolvedValue({
+    vi.spyOn(service as never, "getStudioByIdentifier" as never).mockResolvedValue({
       id: "studio-1",
       slug: "blue-harbor-games",
       display_name: "Blue Harbor Games",
     });
-    vi.spyOn(service as never, "getTitleByStudioAndSlug" as never).mockResolvedValue({
+    vi.spyOn(service as never, "getTitleByStudioAndIdentifier" as never).mockResolvedValue({
       id: "title-1",
       studio_id: "studio-1",
       slug: "lantern-drift",
@@ -1161,6 +1229,7 @@ describe("WorkerAppService title analytics projections", () => {
       genre_display: "Puzzle, Family",
       min_players: 1,
       max_players: 4,
+      max_players_or_more: true,
       age_rating_authority: "ESRB",
       age_rating_value: "E",
       min_age_years: 6,
@@ -1191,11 +1260,97 @@ describe("WorkerAppService title analytics projections", () => {
       expect.objectContaining({
         title: expect.objectContaining({
           id: "title-1",
+          maxPlayersOrMore: true,
+          playerCountDisplay: "1-4+ players",
           wishlistCount: 24,
           libraryCount: 9,
         }),
       }),
     );
+  });
+
+  it("accepts studio and title ids when resolving catalog title details", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "getStudioByIdentifier" as never).mockResolvedValue({
+      id: "studio-1",
+      slug: "blue-harbor-games",
+      display_name: "Blue Harbor Games",
+    });
+    vi.spyOn(service as never, "getTitleByStudioAndIdentifier" as never).mockResolvedValue({
+      id: "title-1",
+      studio_id: "studio-1",
+      slug: "lantern-drift",
+      content_kind: "game",
+      lifecycle_status: "active",
+      visibility: "listed",
+      is_reported: false,
+      current_metadata_revision: 2,
+      display_name: "Lantern Drift",
+      short_description: "Guide glowing paper boats through midnight canals.",
+      description: "Tilt waterways, spin lock-gates, and weave through fireworks across the river.",
+      genre_display: "Puzzle, Family",
+      min_players: 1,
+      max_players: 4,
+      max_players_or_more: false,
+      age_rating_authority: "ESRB",
+      age_rating_value: "E",
+      min_age_years: 6,
+      current_release_id: null,
+      current_release_version: null,
+      current_release_published_at: null,
+      acquisition_url: "https://example.com/lantern-drift",
+      created_at: "2026-03-08T12:00:00Z",
+      updated_at: "2026-03-08T12:00:00Z",
+    });
+    vi.spyOn(service as never, "getTitleMediaByTitleIds" as never).mockResolvedValue(new Map([["title-1", []]]));
+    vi.spyOn(service as never, "getCatalogMediaByTitleIds" as never).mockResolvedValue(new Map([["title-1", []]]));
+    vi.spyOn(service as never, "getTitleShowcaseMediaByTitleIds" as never).mockResolvedValue(new Map([["title-1", []]]));
+    vi.spyOn(service as never, "getTitleReleaseRowsByIds" as never).mockResolvedValue(new Map());
+    vi.spyOn(service as never, "getTitleCollectionCounts" as never).mockResolvedValue(new Map([["title-1", { wishlistCount: 0, libraryCount: 0 }]]));
+
+    await expect(service.getCatalogTitle(null, "studio-1", "title-1")).resolves.toEqual(
+      expect.objectContaining({
+        title: expect.objectContaining({
+          id: "title-1",
+          studioSlug: "blue-harbor-games",
+          slug: "lantern-drift",
+        }),
+      }),
+    );
+  });
+
+  it("accepts a studio id when resolving a public studio profile", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "getStudioByIdentifier" as never).mockResolvedValue({
+      id: "studio-1",
+      slug: "blue-harbor-games",
+      display_name: "Blue Harbor Games",
+      description: "A friendly co-op studio.",
+    });
+    vi.spyOn(service as never, "getStudioLinksByStudioIds" as never).mockResolvedValue(new Map([["studio-1", []]]));
+    vi.spyOn(service as never, "getStudioFollowerCounts" as never).mockResolvedValue(new Map([["studio-1", 12]]));
+    vi.spyOn(service as never, "getStudioMediaByStudioIds" as never).mockResolvedValue(new Map([["studio-1", []]]));
+
+    await expect(service.getPublicStudio("studio-1")).resolves.toEqual({
+      studio: expect.objectContaining({
+        id: "studio-1",
+        slug: "blue-harbor-games",
+        displayName: "Blue Harbor Games",
+        followerCount: 12,
+      }),
+    });
   });
 
   it("includes wishlist and library counts in developer title details", async () => {
@@ -1205,6 +1360,7 @@ describe("WorkerAppService title analytics projections", () => {
       SUPABASE_PUBLISHABLE_KEY: "publishable-key",
       SUPABASE_SECRET_KEY: "secret-key",
     });
+    const serviceAccess = asWorkerAppServicePrivateTestAccess(service);
 
     vi.spyOn(service as never, "requireDeveloperTitleAccess" as never).mockResolvedValue({
       id: "title-1",
@@ -1221,6 +1377,7 @@ describe("WorkerAppService title analytics projections", () => {
       genre_display: "Puzzle, Family",
       min_players: 1,
       max_players: 4,
+      max_players_or_more: true,
       age_rating_authority: "ESRB",
       age_rating_value: "E",
       min_age_years: 6,
@@ -1253,11 +1410,418 @@ describe("WorkerAppService title analytics projections", () => {
     });
     vi.spyOn(service as never, "getTitleCollectionCounts" as never).mockResolvedValue(new Map([["title-1", { wishlistCount: 18, libraryCount: 7 }]]));
 
-    await expect((service as never).getDeveloperTitleDetails("user-1", "title-1")).resolves.toEqual(
+    await expect(serviceAccess.getDeveloperTitleDetails("user-1", "title-1")).resolves.toEqual(
       expect.objectContaining({
         id: "title-1",
+        maxPlayersOrMore: true,
+        playerCountDisplay: "1-4+ players",
         wishlistCount: 18,
         libraryCount: 7,
+      }),
+    );
+  });
+
+  it("keeps open-ended player ranges in catalog results when the minimum-player filter exceeds the numeric max", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "getTitles" as never).mockResolvedValue([
+      {
+        id: "title-1",
+        studio_id: "studio-1",
+        slug: "lantern-drift",
+        content_kind: "game",
+        lifecycle_status: "active",
+        visibility: "listed",
+        is_reported: false,
+        current_metadata_revision: 2,
+        display_name: "Lantern Drift",
+        short_description: "Guide glowing paper boats through midnight canals.",
+        description: "Tilt waterways, spin lock-gates, and weave through fireworks across the river.",
+        genre_display: "Puzzle, Family",
+        min_players: 2,
+        max_players: 4,
+        max_players_or_more: true,
+        age_rating_authority: "ESRB",
+        age_rating_value: "E",
+        min_age_years: 6,
+        current_release_id: null,
+        current_release_version: null,
+        current_release_published_at: null,
+        acquisition_url: null,
+        created_at: "2026-03-08T12:00:00Z",
+        updated_at: "2026-03-08T12:00:00Z",
+      },
+    ]);
+    vi.spyOn(service as never, "getStudiosByIds" as never).mockResolvedValue([
+      {
+        id: "studio-1",
+        slug: "blue-harbor-games",
+        display_name: "Blue Harbor Games",
+        description: "Puzzle adventures for local game nights.",
+        avatar_url: null,
+        avatar_storage_path: null,
+        logo_url: null,
+        logo_storage_path: null,
+        banner_url: null,
+        banner_storage_path: null,
+        created_at: "2026-03-08T12:00:00Z",
+        updated_at: "2026-03-08T12:00:00Z",
+        created_by_user_id: "user-1",
+      },
+    ]);
+    vi.spyOn(service as never, "getTitleMediaByTitleIds" as never).mockResolvedValue(new Map([["title-1", []]]));
+    vi.spyOn(service as never, "getCatalogMediaByTitleIds" as never).mockResolvedValue(new Map([["title-1", []]]));
+    vi.spyOn(service as never, "getTitleReleaseRowsByIds" as never).mockResolvedValue(new Map());
+    vi.spyOn(service as never, "getTitleCollectionCounts" as never).mockResolvedValue(new Map());
+
+    await expect(service.listCatalogTitles({ minPlayers: 6 })).resolves.toEqual(
+      expect.objectContaining({
+        titles: [
+          expect.objectContaining({
+            id: "title-1",
+            maxPlayersOrMore: true,
+            playerCountDisplay: "2-4+ players",
+          }),
+        ],
+      }),
+    );
+  });
+});
+
+describe("WorkerAppService studio slug normalization", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("derives the persisted studio slug from the display name when creating a studio", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "local",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    const now = "2026-04-08T12:00:00Z";
+    const createdStudio = {
+      id: "studio-1",
+      slug: "the-shapers-guild",
+      display_name: "The Shaper's Guild",
+      description: "Board builders.",
+      created_by_user_id: "developer-user-id",
+      created_at: now,
+      updated_at: now,
+    };
+
+    const studiosInsert = vi.fn().mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        single: vi.fn().mockResolvedValue({ data: createdStudio, error: null }),
+      }),
+    });
+    const membershipsInsert = vi.fn().mockResolvedValue({ error: null });
+
+    Object.defineProperty(service, "client", {
+      configurable: true,
+      value: {
+        from(tableName: string) {
+          if (tableName === "studios") {
+            return {
+              insert: studiosInsert,
+            };
+          }
+
+          if (tableName === "studio_memberships") {
+            return {
+              insert: membershipsInsert,
+            };
+          }
+
+          throw new Error(`Unexpected table ${tableName}`);
+        },
+      },
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: { id: "developer-user-id" },
+      roles: ["developer"],
+    });
+    const findStudioBySlug = vi.spyOn(service as never, "findStudioBySlug" as never).mockResolvedValue(null);
+    vi.spyOn(service as never, "getStudioMediaByStudioIds" as never).mockResolvedValue(new Map([["studio-1", []]]));
+
+    await expect(
+      service.createStudio("developer-token", {
+        slug: "the-shaper-s-guild",
+        displayName: "The Shaper's Guild",
+        description: "Board builders.",
+      }),
+    ).resolves.toEqual({
+      studio: expect.objectContaining({
+        id: "studio-1",
+        slug: "the-shapers-guild",
+      }),
+    });
+
+    expect(findStudioBySlug).toHaveBeenCalledWith("the-shapers-guild");
+    expect(studiosInsert).toHaveBeenCalledWith(expect.objectContaining({
+      slug: "the-shapers-guild",
+      display_name: "The Shaper's Guild",
+    }));
+  });
+
+  it("re-derives the studio slug from the display name when updating a studio", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "local",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    let pendingStudioUpdate: Record<string, unknown> | null = null;
+
+    Object.defineProperty(service, "client", {
+      configurable: true,
+      value: {
+        from(tableName: string) {
+          if (tableName === "studios") {
+            return {
+              update(payload: Record<string, unknown>) {
+                pendingStudioUpdate = payload;
+                return {
+                  eq: vi.fn().mockResolvedValue({ error: null }),
+                };
+              },
+            };
+          }
+
+          throw new Error(`Unexpected table ${tableName}`);
+        },
+      },
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: { id: "developer-user-id" },
+      roles: ["developer"],
+    });
+    vi.spyOn(service as never, "getStudioById" as never)
+      .mockResolvedValueOnce({
+        id: "studio-1",
+        slug: "the-shaper-s-guild",
+        display_name: "The Shaper's Guild",
+        description: "Old description.",
+        created_by_user_id: "developer-user-id",
+        created_at: "2026-04-07T12:00:00Z",
+        updated_at: "2026-04-07T12:00:00Z",
+      })
+      .mockResolvedValueOnce({
+        id: "studio-1",
+        slug: "the-shapers-guild",
+        display_name: "The Shaper's Guild",
+        description: "New description.",
+        created_by_user_id: "developer-user-id",
+        created_at: "2026-04-07T12:00:00Z",
+        updated_at: "2026-04-08T12:00:00Z",
+      });
+    vi.spyOn(service as never, "requireStudioAccess" as never).mockResolvedValue(undefined);
+    const findStudioBySlug = vi.spyOn(service as never, "findStudioBySlug" as never).mockResolvedValue(null);
+    vi.spyOn(service as never, "getStudioLinksByStudioIds" as never).mockResolvedValue(new Map([["studio-1", []]]));
+    vi.spyOn(service as never, "getStudioFollowerCounts" as never).mockResolvedValue(new Map([["studio-1", 0]]));
+    vi.spyOn(service as never, "getStudioMediaByStudioIds" as never).mockResolvedValue(new Map([["studio-1", []]]));
+
+    await expect(
+      service.updateStudio("developer-token", "studio-1", {
+        slug: "the-shaper-s-guild",
+        displayName: "The Shaper's Guild",
+        description: "New description.",
+      }),
+    ).resolves.toEqual({
+      studio: expect.objectContaining({
+        id: "studio-1",
+        slug: "the-shapers-guild",
+      }),
+    });
+
+    expect(findStudioBySlug).toHaveBeenCalledWith("the-shapers-guild");
+    expect(pendingStudioUpdate).toEqual(expect.objectContaining({
+      slug: "the-shapers-guild",
+      display_name: "The Shaper's Guild",
+      description: "New description.",
+    }));
+  });
+});
+
+describe("WorkerAppService identifier slug fallback", () => {
+  it("falls back to studio slug lookup when the identifier is not a valid uuid", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "local",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    const studioRow = {
+      id: "7562f8db-6e19-495e-975c-c807156dc491",
+      slug: "pine-lantern-labs",
+      display_name: "Pine Lantern Labs",
+      description: "Board builders.",
+      created_by_user_id: "developer-user-id",
+      created_at: "2026-04-08T12:00:00Z",
+      updated_at: "2026-04-08T12:00:00Z",
+    };
+
+    Object.defineProperty(service, "client", {
+      configurable: true,
+      value: {
+        from(tableName: string) {
+          const filters: Array<{ column: string; value: unknown }> = [];
+          return {
+            select() {
+              return this;
+            },
+            eq(column: string, value: unknown) {
+              filters.push({ column, value });
+              return this;
+            },
+            limit() {
+              if (tableName !== "studios") {
+                throw new Error(`Unexpected table ${tableName}`);
+              }
+
+              const idFilter = filters.find((entry) => entry.column === "id");
+              if (idFilter?.value === "pine-lantern-labs") {
+                return Promise.resolve({ data: null, error: { code: "22P02", message: "invalid input syntax for type uuid" } });
+              }
+
+              const slugFilter = filters.find((entry) => entry.column === "slug");
+              if (slugFilter?.value === "pine-lantern-labs") {
+                return Promise.resolve({ data: [studioRow], error: null });
+              }
+
+              return Promise.resolve({ data: [], error: null });
+            },
+          };
+        },
+      },
+    });
+
+    vi.spyOn(service as never, "getStudioLinksByStudioIds" as never).mockResolvedValue(new Map([[studioRow.id, []]]));
+    vi.spyOn(service as never, "getStudioFollowerCounts" as never).mockResolvedValue(new Map([[studioRow.id, 0]]));
+    vi.spyOn(service as never, "getStudioMediaByStudioIds" as never).mockResolvedValue(new Map([[studioRow.id, []]]));
+
+    await expect(service.getPublicStudio("pine-lantern-labs")).resolves.toEqual({
+      studio: expect.objectContaining({
+        id: studioRow.id,
+        slug: "pine-lantern-labs",
+      }),
+    });
+  });
+
+  it("falls back to title slug lookup when the title identifier is not a valid uuid", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "local",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    const studioRow = {
+      id: "7562f8db-6e19-495e-975c-c807156dc491",
+      slug: "pine-lantern-labs",
+      display_name: "Pine Lantern Labs",
+      description: "Board builders.",
+      created_by_user_id: "developer-user-id",
+      created_at: "2026-04-08T12:00:00Z",
+      updated_at: "2026-04-08T12:00:00Z",
+    };
+    const titleRow = {
+      id: "ec26b7df-158c-4ff4-a5fa-a282b57096fa",
+      studio_id: studioRow.id,
+      slug: "the-shapers-oracle",
+      content_kind: "game",
+      lifecycle_status: "active",
+      visibility: "listed",
+      is_reported: false,
+      current_metadata_revision: 1,
+      display_name: "The Shaper's Oracle",
+      short_description: "Shape destiny.",
+      description: "Shape destiny.",
+      genre_display: "Puzzle",
+      min_players: 1,
+      max_players: 4,
+      max_players_or_more: false,
+      age_rating_authority: null,
+      age_rating_value: null,
+      min_age_years: 10,
+      current_release_id: null,
+      current_release_version: null,
+      current_release_published_at: null,
+      acquisition_url: null,
+      created_at: "2026-04-08T12:00:00Z",
+      updated_at: "2026-04-08T12:00:00Z",
+    };
+
+    Object.defineProperty(service, "client", {
+      configurable: true,
+      value: {
+        from(tableName: string) {
+          const filters: Array<{ column: string; value: unknown }> = [];
+          return {
+            select() {
+              return this;
+            },
+            eq(column: string, value: unknown) {
+              filters.push({ column, value });
+              return this;
+            },
+            limit() {
+              if (tableName === "studios") {
+                const idFilter = filters.find((entry) => entry.column === "id");
+                if (idFilter?.value === "pine-lantern-labs") {
+                  return Promise.resolve({ data: null, error: { code: "22P02", message: "invalid input syntax for type uuid" } });
+                }
+
+                const slugFilter = filters.find((entry) => entry.column === "slug");
+                if (slugFilter?.value === "pine-lantern-labs") {
+                  return Promise.resolve({ data: [studioRow], error: null });
+                }
+              }
+
+              if (tableName === "titles") {
+                const idFilter = filters.find((entry) => entry.column === "id");
+                if (idFilter?.value === "the-shapers-oracle") {
+                  return Promise.resolve({ data: null, error: { code: "22P02", message: "invalid input syntax for type uuid" } });
+                }
+
+                const slugFilter = filters.find((entry) => entry.column === "slug");
+                const studioFilter = filters.find((entry) => entry.column === "studio_id");
+                if (slugFilter?.value === "the-shapers-oracle" && studioFilter?.value === studioRow.id) {
+                  return Promise.resolve({ data: [titleRow], error: null });
+                }
+              }
+
+              return Promise.resolve({ data: [], error: null });
+            },
+          };
+        },
+      },
+    });
+
+    vi.spyOn(service as never, "getTitleMediaByTitleIds" as never).mockResolvedValue(new Map([[titleRow.id, []]]));
+    vi.spyOn(service as never, "getCatalogMediaByTitleIds" as never).mockResolvedValue(new Map([[titleRow.id, []]]));
+    vi.spyOn(service as never, "getTitleShowcaseMediaByTitleIds" as never).mockResolvedValue(new Map([[titleRow.id, []]]));
+    vi.spyOn(service as never, "getTitleReleaseRowsByIds" as never).mockResolvedValue(new Map());
+    vi.spyOn(service as never, "getTitleCollectionCounts" as never).mockResolvedValue(new Map([[titleRow.id, { wishlistCount: 0, libraryCount: 0 }]]));
+
+    await expect(service.getCatalogTitle(null, "pine-lantern-labs", "the-shapers-oracle")).resolves.toEqual(
+      expect.objectContaining({
+        title: expect.objectContaining({
+          id: titleRow.id,
+          studioSlug: "pine-lantern-labs",
+          slug: "the-shapers-oracle",
+        }),
       }),
     );
   });
@@ -1323,6 +1887,7 @@ describe("WorkerAppService moderation title reports", () => {
       SUPABASE_PUBLISHABLE_KEY: "publishable-key",
       SUPABASE_SECRET_KEY: "secret-key",
     });
+    const serviceAccess = asWorkerAppServicePrivateTestAccess(service);
 
     vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
       appUser: { id: "moderator-user-id" },
@@ -1358,7 +1923,8 @@ describe("WorkerAppService moderation title reports", () => {
         display_name: "Production Smoke Studio",
       },
     ]);
-    vi.spyOn(service as never, "getUsersByIds" as never).mockImplementation(async (userIds: string[]) => {
+    vi.spyOn(serviceAccess, "getUsersByIds").mockImplementation(async (...args: unknown[]) => {
+      const [userIds] = args as [string[]];
       const knownUsers = userIds
         .filter((userId) => userId === "reporter-1")
         .map(() => ({
@@ -1366,7 +1932,13 @@ describe("WorkerAppService moderation title reports", () => {
           auth_user_id: "auth-reporter-1",
           user_name: "prod.smoke.player",
           display_name: "Production Smoke Player",
+          first_name: "Production",
+          last_name: "Player",
           email: "testing+player@boardenthusiasts.com",
+          email_verified: true,
+          identity_provider: "email",
+          avatar_url: null,
+          updated_at: "2026-04-07T11:00:00Z",
         }));
       return knownUsers;
     });
@@ -1530,6 +2102,289 @@ describe("WorkerAppService.deleteTitle", () => {
     ).resolves.toBeUndefined();
 
     expect(tables.titles).toHaveLength(0);
+  });
+});
+
+describe("WorkerAppService unified catalog media", () => {
+  beforeEach(() => {
+    resetTables();
+    vi.restoreAllMocks();
+    supabaseAuthMocks.getUser.mockReset();
+    supabaseAuthMocks.updateUserById.mockReset();
+    supabaseAuthMocks.listUsers.mockReset();
+    supabaseAuthMocks.signInWithPassword.mockReset();
+  });
+
+  it("lists authenticated catalog media types", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "local",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: { id: "developer-user-id" },
+      roles: ["developer"],
+    });
+    vi.spyOn(service as never, "getCatalogMediaTypeRows" as never).mockResolvedValue([
+      {
+        key: "title_showcase",
+        owner_kind: "title",
+        display_name: "Title showcase",
+        usage_summary: "Used for screenshots and videos.",
+        bucket_name: "hero-images",
+        max_upload_bytes: 3145728,
+        accepted_mime_types: ["image/webp", "image/png"],
+        accepted_file_types: ["WEBP", "PNG"],
+        recommended_width: 1920,
+        recommended_height: 1080,
+        aspect_width: 16,
+        aspect_height: 9,
+        allows_multiple: true,
+        supports_video: true,
+        created_at: "2026-04-07T12:00:00Z",
+        updated_at: "2026-04-07T12:00:00Z",
+      },
+    ]);
+
+    await expect(service.listCatalogMediaTypes("developer-token")).resolves.toEqual({
+      mediaTypes: [
+        {
+          key: "title_showcase",
+          ownerKind: "title",
+          displayName: "Title showcase",
+          usageSummary: "Used for screenshots and videos.",
+          bucket: "hero-images",
+          maxUploadBytes: 3145728,
+          acceptedMimeTypes: ["image/webp", "image/png"],
+          acceptedFileTypes: ["WEBP", "PNG"],
+          recommendedWidth: 1920,
+          recommendedHeight: 1080,
+          aspectWidth: 16,
+          aspectHeight: 9,
+          allowsMultiple: true,
+          supportsVideo: true,
+        },
+      ],
+    });
+  });
+
+  it("maps unified title media entries into legacy title media assets with showcase fallback hero", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "local",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: { id: "developer-user-id" },
+      roles: ["developer"],
+    });
+    vi.spyOn(service as never, "requireDeveloperTitleAccess" as never).mockResolvedValue({
+      id: "title-1",
+      studio_id: "studio-1",
+      slug: "lantern-drift",
+    });
+    vi.spyOn(service as never, "getCatalogMediaEntriesForTitle" as never).mockResolvedValue([
+      {
+        id: "card-entry",
+        title_id: "title-1",
+        studio_id: null,
+        media_type_key: "title_card",
+        kind: "image",
+        source_url: "https://cdn.example.com/card.webp",
+        storage_path: "titles/studio/title/card.webp",
+        video_url: null,
+        alt_text: "Card art",
+        mime_type: "image/webp",
+        width: 900,
+        height: 900,
+        display_order: 0,
+        created_at: "2026-04-07T10:00:00Z",
+        updated_at: "2026-04-07T10:00:00Z",
+      },
+      {
+        id: "showcase-entry",
+        title_id: "title-1",
+        studio_id: null,
+        media_type_key: "title_showcase",
+        kind: "image",
+        source_url: "https://cdn.example.com/showcase.webp",
+        storage_path: "titles/studio/title/showcase/showcase-entry.webp",
+        video_url: null,
+        alt_text: "Showcase art",
+        mime_type: "image/webp",
+        width: 1600,
+        height: 900,
+        display_order: 0,
+        created_at: "2026-04-07T11:00:00Z",
+        updated_at: "2026-04-07T11:00:00Z",
+      },
+      {
+        id: "logo-entry",
+        title_id: "title-1",
+        studio_id: null,
+        media_type_key: "title_logo",
+        kind: "image",
+        source_url: "https://cdn.example.com/logo.webp",
+        storage_path: "titles/studio/title/logo.webp",
+        video_url: null,
+        alt_text: "Logo art",
+        mime_type: "image/webp",
+        width: 1200,
+        height: 400,
+        display_order: 0,
+        created_at: "2026-04-07T09:00:00Z",
+        updated_at: "2026-04-07T09:00:00Z",
+      },
+    ]);
+
+    await expect(service.getTitleMediaAssets("developer-token", "title-1")).resolves.toEqual({
+      mediaAssets: [
+        expect.objectContaining({
+          id: "card-entry",
+          mediaRole: "card",
+          sourceUrl: "https://cdn.example.com/card.webp",
+        }),
+        expect.objectContaining({
+          id: "showcase-entry",
+          mediaRole: "hero",
+          sourceUrl: "https://cdn.example.com/showcase.webp",
+        }),
+        expect.objectContaining({
+          id: "logo-entry",
+          mediaRole: "logo",
+          sourceUrl: "https://cdn.example.com/logo.webp",
+        }),
+      ],
+    });
+  });
+
+  it("creates screenshot showcase media from a direct image url without forcing an upload placeholder", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "local",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: { id: "developer-user-id" },
+      roles: ["developer"],
+    });
+    vi.spyOn(service as never, "requireDeveloperTitleAccess" as never).mockResolvedValue({
+      id: "title-1",
+      studio_id: "studio-1",
+      slug: "lantern-drift",
+    });
+    const createCatalogMediaEntryForOwner = vi.spyOn(service as never, "createCatalogMediaEntryForOwner" as never).mockResolvedValue({
+      id: "showcase-entry",
+      title_id: "title-1",
+      studio_id: null,
+      media_type_key: "title_showcase",
+      kind: "image",
+      source_url: "https://cdn.example.com/showcase.webp",
+      storage_path: null,
+      preview_image_url: null,
+      preview_storage_path: null,
+      video_url: null,
+      alt_text: "Showcase art",
+      mime_type: null,
+      width: null,
+      height: null,
+      display_order: 1,
+      created_at: "2026-04-07T10:00:00Z",
+      updated_at: "2026-04-07T10:00:00Z",
+    });
+
+    await expect(
+      service.createTitleShowcaseMedia("developer-token", "title-1", {
+        kind: "image",
+        imageUrl: "https://cdn.example.com/showcase.webp",
+        videoUrl: null,
+        altText: "Showcase art",
+        displayOrder: 1,
+      }),
+    ).resolves.toEqual({
+      showcaseMedia: expect.objectContaining({
+        id: "showcase-entry",
+        imageUrl: "https://cdn.example.com/showcase.webp",
+      }),
+    });
+
+    expect(createCatalogMediaEntryForOwner).toHaveBeenCalledWith("title", "title-1", expect.objectContaining({
+      mediaTypeKey: "title_showcase",
+      kind: "image",
+      sourceUrl: "https://cdn.example.com/showcase.webp",
+      videoUrl: null,
+    }));
+  });
+
+  it("re-syncs a title slug when metadata is unchanged but slug normalization rules have changed", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "local",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    const currentVersion = {
+      title_id: "title-1",
+      revision_number: 1,
+      is_current: true,
+      is_frozen: false,
+      display_name: "The Shaper's Oracle",
+      short_description: "Shape destiny.",
+      description: "Shape destiny.",
+      genre_display: "Puzzle",
+      min_players: 1,
+      max_players: 4,
+      max_players_or_more: false,
+      age_rating_authority: "ESRB",
+      age_rating_value: "E10+",
+      min_age_years: 10,
+      created_at: "2026-04-08T12:00:00Z",
+      updated_at: "2026-04-08T12:00:00Z",
+    };
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: { id: "developer-user-id" },
+      roles: ["developer"],
+    });
+    vi.spyOn(service as never, "requireDeveloperTitleAccess" as never).mockResolvedValue({
+      id: "title-1",
+      studio_id: "studio-1",
+      slug: "the-shaper-s-oracle",
+    });
+    vi.spyOn(service as never, "getCurrentTitleMetadataVersionRow" as never).mockResolvedValue(currentVersion);
+    vi.spyOn(service as never, "getGenreSlugsForMetadataVersion" as never).mockResolvedValue(["puzzle"]);
+    vi.spyOn(service as never, "requireGenres" as never).mockResolvedValue([{ slug: "puzzle", display_name: "Puzzle" }]);
+    vi.spyOn(service as never, "resolveAgeRatingAuthorityCode" as never).mockResolvedValue("ESRB");
+    vi.spyOn(service as never, "ensureDerivedTitleSlugAvailable" as never).mockResolvedValue(undefined);
+    vi.spyOn(service as never, "titleMetadataMatchesCurrentVersion" as never).mockReturnValue(true);
+    const syncTitleFromMetadataVersion = vi.spyOn(service as never, "syncTitleFromMetadataVersion" as never).mockResolvedValue(undefined);
+    vi.spyOn(service as never, "getDeveloperTitleDetails" as never).mockResolvedValue({ id: "title-1", slug: "the-shapers-oracle" });
+
+    await expect(
+      service.upsertTitleMetadata("developer-token", "title-1", {
+        displayName: "The Shaper's Oracle",
+        shortDescription: "Shape destiny.",
+        description: "Shape destiny.",
+        genreSlugs: ["puzzle"],
+        minPlayers: 1,
+        maxPlayers: 4,
+        maxPlayersOrMore: false,
+        ageRatingAuthority: "ESRB",
+        ageRatingValue: "E10+",
+        minAgeYears: 10,
+      }),
+    ).resolves.toEqual({
+      title: { id: "title-1", slug: "the-shapers-oracle" },
+    });
+
+    expect(syncTitleFromMetadataVersion).toHaveBeenCalledWith("title-1", currentVersion);
   });
 });
 

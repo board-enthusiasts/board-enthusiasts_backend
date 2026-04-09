@@ -11,11 +11,19 @@ import {
   type CreateDeveloperTitleRequest,
   type CreateTitleShowcaseMediaRequest,
   type DeleteDeveloperTitleRequest,
+  catalogMediaTypeDefinitions,
   migrationMediaBuckets,
   migrationMediaUploadPolicies,
   type AgeRatingAuthorityDefinition,
   type AgeRatingAuthorityListResponse,
   type CatalogPaging,
+  type CatalogMediaEntry,
+  type CatalogMediaEntryKind,
+  type CatalogMediaEntryListResponse,
+  type CatalogMediaEntryResponse,
+  type CatalogMediaTypeDefinition,
+  type CatalogMediaTypeKey,
+  type CatalogMediaTypeListResponse,
   type CatalogTitle,
   type CatalogTitleListQuery,
   type CatalogTitleListResponse,
@@ -23,6 +31,7 @@ import {
   type CatalogTitleSummary,
   type CreatePlayerTitleReportRequest,
   type CurrentUserResponse,
+  type CreateCatalogMediaEntryRequest,
   type DeveloperTitle,
   type DeveloperEnrollmentResponse,
   type DeveloperTitleListResponse,
@@ -33,6 +42,7 @@ import {
   type ModerateTitleReportDecisionRequest,
   type ModerationDeveloperListResponse,
   normalizeGenreSlug,
+  type MediaOwnerKind,
   type PlayerCollectionMutationResponse,
   type PlayerFollowedStudioListResponse,
   type PlayerStudioFollowMutationResponse,
@@ -78,6 +88,7 @@ import {
   type UpsertTitleMediaAssetRequest,
   type UpsertTitleMetadataRequest,
   type UpsertTitleReleaseRequest,
+  type UpdateCatalogMediaEntryRequest,
   type UpdateTitleShowcaseMediaRequest,
   type UpdateDeveloperTitleRequest,
   type UserProfileResponse,
@@ -198,6 +209,7 @@ type TitleRow = {
   genre_display: string;
   min_players: number;
   max_players: number;
+  max_players_or_more: boolean;
   age_rating_authority: string | null;
   age_rating_value: string | null;
   min_age_years: number;
@@ -243,6 +255,45 @@ type TitleShowcaseMediaRow = {
   image_storage_path: string | null;
   video_url: string | null;
   alt_text: string | null;
+  display_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+type CatalogMediaTypeDefinitionRow = {
+  key: CatalogMediaTypeKey;
+  owner_kind: MediaOwnerKind;
+  display_name: string;
+  usage_summary: string;
+  bucket_name: string;
+  max_upload_bytes: number;
+  recommended_width: number;
+  recommended_height: number;
+  accepted_mime_types: string[];
+  accepted_file_types: string[];
+  aspect_width: number;
+  aspect_height: number;
+  allows_multiple: boolean;
+  supports_video: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+type CatalogMediaEntryRow = {
+  id: string;
+  studio_id: string | null;
+  title_id: string | null;
+  media_type_key: CatalogMediaTypeKey;
+  kind: CatalogMediaEntryKind;
+  source_url: string | null;
+  storage_path: string | null;
+  preview_image_url: string | null;
+  preview_storage_path: string | null;
+  video_url: string | null;
+  alt_text: string | null;
+  mime_type: string | null;
+  width: number | null;
+  height: number | null;
   display_order: number;
   created_at: string;
   updated_at: string;
@@ -341,6 +392,7 @@ type TitleMetadataVersionRow = {
   genre_display: string;
   min_players: number;
   max_players: number;
+  max_players_or_more: boolean;
   age_rating_authority: string | null;
   age_rating_value: string | null;
   min_age_years: number;
@@ -432,6 +484,29 @@ const uploadPolicyBySurface = {
 
 type UploadSurface = keyof typeof uploadPolicyBySurface;
 
+const titleMediaRoleToTypeKey: Record<"card" | "hero" | "logo", CatalogMediaTypeKey> = {
+  card: "title_card",
+  hero: "title_quick_view_banner",
+  logo: "title_logo",
+};
+
+const studioMediaKindToTypeKey: Record<"avatar" | "logo" | "banner", CatalogMediaTypeKey> = {
+  avatar: "studio_avatar",
+  logo: "studio_logo",
+  banner: "studio_banner",
+};
+
+const uploadSurfaceByMediaTypeKey: Record<CatalogMediaTypeKey, UploadSurface> = {
+  studio_avatar: "avatar",
+  studio_logo: "studioLogo",
+  studio_banner: "studioBanner",
+  title_avatar: "avatar",
+  title_card: "titleCard",
+  title_logo: "titleLogo",
+  title_quick_view_banner: "titleHero",
+  title_showcase: "titleHero",
+};
+
 function sortRoles(roles: PlatformRole[]): PlatformRole[] {
   return [...roles].sort((left, right) => roleOrder.indexOf(left) - roleOrder.indexOf(right));
 }
@@ -453,8 +528,24 @@ function buildInitials(displayName: string | null, firstName: string | null, las
     .join("");
 }
 
-function buildPlayerCountDisplay(minPlayers: number, maxPlayers: number): string {
+function buildPlayerCountDisplay(minPlayers: number, maxPlayers: number, maxPlayersOrMore: boolean): string {
+  if (maxPlayersOrMore) {
+    return minPlayers === maxPlayers ? `${maxPlayers}+ players` : `${minPlayers}-${maxPlayers}+ players`;
+  }
+
   return minPlayers === maxPlayers ? `${minPlayers} player${minPlayers === 1 ? "" : "s"}` : `${minPlayers}-${maxPlayers} players`;
+}
+
+function supportsAtLeastPlayerCount(title: Pick<TitleRow, "max_players" | "max_players_or_more">, playerCount: number): boolean {
+  return title.max_players_or_more || title.max_players >= playerCount;
+}
+
+function comparePlayerRange(left: Pick<TitleRow, "min_players" | "max_players" | "max_players_or_more">, right: Pick<TitleRow, "min_players" | "max_players" | "max_players_or_more">): number {
+  if (left.max_players_or_more !== right.max_players_or_more) {
+    return left.max_players_or_more ? 1 : -1;
+  }
+
+  return left.max_players - right.max_players || left.min_players - right.min_players;
 }
 
 function buildAgeDisplay(authority: string | null, value: string | null): string | null {
@@ -610,13 +701,54 @@ function validateTitleSlug(slug: string): boolean {
   return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug);
 }
 
+function isMissingRelationErrorMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes("schema cache") || normalized.includes("does not exist");
+}
+
+function isCatalogMediaEntriesUnavailable(error: { message?: string } | null | undefined): boolean {
+  const message = error?.message ?? "";
+  return message.toLowerCase().includes("catalog_media_entries") && isMissingRelationErrorMessage(message);
+}
+
+function isCatalogMediaTypeDefinitionsUnavailable(error: { message?: string } | null | undefined): boolean {
+  const message = error?.message ?? "";
+  return message.toLowerCase().includes("catalog_media_type_definitions") && isMissingRelationErrorMessage(message);
+}
+
 function deriveTitleSlug(displayName: string): string {
   return displayName
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/['’`]/g, "")
+    .replace(/&/g, " and ")
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .replace(/-{2,}/g, "-");
+}
+
+function deriveStudioSlug(displayName: string): string {
+  return displayName
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/['’`]/g, "")
+    .replace(/&/g, " and ")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/-{2,}/g, "-");
+}
+
+function isInvalidUuidLookupError(error: { code?: string | null; message?: string | null } | null | undefined): boolean {
+  if (!error) {
+    return false;
+  }
+
+  const message = error.message ?? "";
+  return error.code === "22P02" || message.toLowerCase().includes("invalid input syntax for type uuid");
 }
 
 function isPublicCatalogTitle(title: TitleRow): boolean {
@@ -680,6 +812,100 @@ function mapTitleShowcaseMedia(row: TitleShowcaseMediaRow): TitleShowcaseMedia {
   };
 }
 
+function mapCatalogMediaTypeDefinition(row: CatalogMediaTypeDefinitionRow): CatalogMediaTypeDefinition {
+  return {
+    key: row.key,
+    ownerKind: row.owner_kind,
+    displayName: row.display_name,
+    usageSummary: row.usage_summary,
+    bucket: row.bucket_name as CatalogMediaTypeDefinition["bucket"],
+    maxUploadBytes: row.max_upload_bytes,
+    recommendedWidth: row.recommended_width,
+    recommendedHeight: row.recommended_height,
+    acceptedMimeTypes: row.accepted_mime_types,
+    acceptedFileTypes: row.accepted_file_types,
+    aspectWidth: row.aspect_width,
+    aspectHeight: row.aspect_height,
+    allowsMultiple: row.allows_multiple,
+    supportsVideo: row.supports_video,
+  };
+}
+
+function mapCatalogMediaEntry(row: CatalogMediaEntryRow): CatalogMediaEntry {
+  return {
+    id: row.id,
+    ownerKind: row.studio_id ? "studio" : "title",
+    studioId: row.studio_id,
+    titleId: row.title_id,
+    mediaTypeKey: row.media_type_key,
+    kind: row.kind,
+    sourceUrl: row.source_url,
+    storagePath: row.storage_path,
+    previewImageUrl: row.preview_image_url,
+    previewStoragePath: row.preview_storage_path,
+    videoUrl: row.video_url,
+    altText: row.alt_text,
+    mimeType: row.mime_type,
+    width: row.width,
+    height: row.height,
+    displayOrder: row.display_order,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapCatalogMediaEntryToLegacyTitleAsset(row: CatalogMediaEntryRow): TitleMediaAssetRow | null {
+  if (row.kind !== "image") {
+    return null;
+  }
+
+  let mediaRole: TitleMediaAssetRow["media_role"] | null = null;
+  if (row.media_type_key === "title_card") {
+    mediaRole = "card";
+  } else if (row.media_type_key === "title_logo") {
+    mediaRole = "logo";
+  } else if (row.media_type_key === "title_quick_view_banner") {
+    mediaRole = "hero";
+  }
+
+  if (!mediaRole || !row.title_id || !row.source_url) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    title_id: row.title_id,
+    media_role: mediaRole,
+    source_url: row.source_url,
+    storage_path: row.storage_path,
+    alt_text: row.alt_text,
+    mime_type: row.mime_type,
+    width: row.width,
+    height: row.height,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
+function mapCatalogMediaEntryToLegacyTitleShowcase(row: CatalogMediaEntryRow): TitleShowcaseMediaRow | null {
+  if (row.media_type_key !== "title_showcase" || !row.title_id) {
+    return null;
+  }
+
+  return {
+    id: row.id,
+    title_id: row.title_id,
+    kind: row.kind,
+    image_url: row.kind === "external_video" ? row.preview_image_url : row.source_url,
+    image_storage_path: row.kind === "external_video" ? row.preview_storage_path : row.storage_path,
+    video_url: row.video_url,
+    alt_text: row.alt_text,
+    display_order: row.display_order,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  };
+}
+
 function isRenderableShowcaseMedia(row: TitleShowcaseMediaRow): boolean {
   if (!row.image_url) {
     return false;
@@ -690,6 +916,15 @@ function isRenderableShowcaseMedia(row: TitleShowcaseMediaRow): boolean {
   }
 
   return true;
+}
+
+function resolveStudioMediaUrl(
+  mediaEntries: CatalogMediaEntryRow[] | undefined,
+  mediaTypeKey: CatalogMediaTypeKey,
+  fallbackUrl: string | null
+): string | null {
+  const matchingEntry = mediaEntries?.find((entry) => entry.media_type_key === mediaTypeKey && entry.kind === "image" && entry.source_url);
+  return matchingEntry?.source_url ?? fallbackUrl;
 }
 
 function mapGenreDefinition(row: GenreRow): GenreDefinition {
@@ -718,7 +953,8 @@ function mapTitleMetadataVersion(row: TitleMetadataVersionRow, genreSlugs: strin
     genreDisplay: row.genre_display,
     minPlayers: row.min_players,
     maxPlayers: row.max_players,
-    playerCountDisplay: buildPlayerCountDisplay(row.min_players, row.max_players),
+    maxPlayersOrMore: row.max_players_or_more,
+    playerCountDisplay: buildPlayerCountDisplay(row.min_players, row.max_players, row.max_players_or_more),
     ageRatingAuthority: row.age_rating_authority,
     ageRatingValue: row.age_rating_value,
     minAgeYears: row.min_age_years,
@@ -770,10 +1006,48 @@ function buildAcquisition(
   };
 }
 
+function buildLegacyTitleMediaAssetsFromEntries(entries: CatalogMediaEntryRow[]): TitleMediaAssetRow[] {
+  const mappedAssets = entries
+    .map(mapCatalogMediaEntryToLegacyTitleAsset)
+    .filter((entry): entry is TitleMediaAssetRow => Boolean(entry));
+
+  const hasHero = mappedAssets.some((entry) => entry.media_role === "hero");
+  if (!hasHero) {
+    const firstShowcaseImage = entries
+      .filter((entry) => entry.media_type_key === "title_showcase" && entry.kind === "image" && entry.source_url)
+      .sort((left, right) => left.display_order - right.display_order || left.created_at.localeCompare(right.created_at))[0];
+    if (firstShowcaseImage?.title_id && firstShowcaseImage.source_url) {
+      mappedAssets.push({
+        id: firstShowcaseImage.id,
+        title_id: firstShowcaseImage.title_id,
+        media_role: "hero",
+        source_url: firstShowcaseImage.source_url,
+        storage_path: firstShowcaseImage.storage_path,
+        alt_text: firstShowcaseImage.alt_text,
+        mime_type: firstShowcaseImage.mime_type,
+        width: firstShowcaseImage.width,
+        height: firstShowcaseImage.height,
+        created_at: firstShowcaseImage.created_at,
+        updated_at: firstShowcaseImage.updated_at,
+      });
+    }
+  }
+
+  return mappedAssets.sort((left, right) => left.media_role.localeCompare(right.media_role));
+}
+
+function buildLegacyTitleShowcaseMediaFromEntries(entries: CatalogMediaEntryRow[]): TitleShowcaseMediaRow[] {
+  return entries
+    .map(mapCatalogMediaEntryToLegacyTitleShowcase)
+    .filter((entry): entry is TitleShowcaseMediaRow => Boolean(entry))
+    .sort((left, right) => left.display_order - right.display_order || left.created_at.localeCompare(right.created_at));
+}
+
 function buildCatalogSummary(
   title: TitleRow,
   studio: StudioRow,
   mediaRows: TitleMediaAssetRow[],
+  catalogMediaEntries: CatalogMediaEntryRow[] = [],
   currentReleaseRow?: TitleReleaseRow | null,
   collectionCounts: TitleCollectionCounts = { wishlistCount: 0, libraryCount: 0 }
 ): CatalogTitleSummary {
@@ -795,7 +1069,8 @@ function buildCatalogSummary(
     genreDisplay: title.genre_display,
     minPlayers: title.min_players,
     maxPlayers: title.max_players,
-    playerCountDisplay: buildPlayerCountDisplay(title.min_players, title.max_players),
+    maxPlayersOrMore: title.max_players_or_more,
+    playerCountDisplay: buildPlayerCountDisplay(title.min_players, title.max_players, title.max_players_or_more),
     ageRatingAuthority: title.age_rating_authority,
     ageRatingValue: title.age_rating_value,
     minAgeYears: title.min_age_years,
@@ -804,7 +1079,8 @@ function buildCatalogSummary(
     libraryCount: collectionCounts.libraryCount,
     cardImageUrl,
     logoImageUrl,
-    acquisitionUrl: isPublicCatalogDetail(title) && isReleasePubliclyAvailable(currentReleaseRow) ? title.acquisition_url : null
+    acquisitionUrl: isPublicCatalogDetail(title) && isReleasePubliclyAvailable(currentReleaseRow) ? title.acquisition_url : null,
+    catalogMediaEntries: catalogMediaEntries.map(mapCatalogMediaEntry),
   };
 }
 
@@ -812,12 +1088,13 @@ function buildCatalogDetail(
   title: TitleRow,
   studio: StudioRow,
   mediaRows: TitleMediaAssetRow[],
+  catalogMediaEntries: CatalogMediaEntryRow[],
   showcaseRows: TitleShowcaseMediaRow[],
   currentReleaseRow?: TitleReleaseRow | null,
   collectionCounts: TitleCollectionCounts = { wishlistCount: 0, libraryCount: 0 }
 ): CatalogTitle {
   return {
-    ...buildCatalogSummary(title, studio, mediaRows, currentReleaseRow, collectionCounts),
+    ...buildCatalogSummary(title, studio, mediaRows, catalogMediaEntries, currentReleaseRow, collectionCounts),
     description: title.description,
     mediaAssets: mediaRows.map(mapTitleMediaAsset),
     showcaseMedia: showcaseRows.filter(isRenderableShowcaseMedia).map(mapTitleShowcaseMedia),
@@ -832,6 +1109,7 @@ function buildDeveloperTitle(
   title: TitleRow,
   studio: StudioRow,
   mediaRows: TitleMediaAssetRow[],
+  catalogMediaEntries: CatalogMediaEntryRow[],
   showcaseRows: TitleShowcaseMediaRow[],
   genreSlugs: string[],
   currentReleaseRow?: TitleReleaseRow | null,
@@ -853,7 +1131,8 @@ function buildDeveloperTitle(
     genreDisplay: title.genre_display,
     minPlayers: title.min_players,
     maxPlayers: title.max_players,
-    playerCountDisplay: buildPlayerCountDisplay(title.min_players, title.max_players),
+    maxPlayersOrMore: title.max_players_or_more,
+    playerCountDisplay: buildPlayerCountDisplay(title.min_players, title.max_players, title.max_players_or_more),
     ageRatingAuthority: title.age_rating_authority,
     ageRatingValue: title.age_rating_value,
     minAgeYears: title.min_age_years,
@@ -862,6 +1141,7 @@ function buildDeveloperTitle(
     libraryCount: collectionCounts.libraryCount,
     cardImageUrl: mediaRows.find((row) => row.media_role === "card")?.source_url ?? null,
     acquisitionUrl: title.acquisition_url,
+    catalogMediaEntries: catalogMediaEntries.map(mapCatalogMediaEntry),
     mediaAssets: mediaRows.map(mapTitleMediaAsset),
     showcaseMedia: showcaseRows.map(mapTitleShowcaseMedia),
     currentRelease: buildCurrentRelease(title, currentReleaseRow),
@@ -1030,9 +1310,6 @@ interface StudioMutationRequest {
   slug: string;
   displayName: string;
   description?: string | null;
-  avatarUrl?: string | null;
-  logoUrl?: string | null;
-  bannerUrl?: string | null;
 }
 
 interface StudioLinkMutationRequest {
@@ -1750,8 +2027,11 @@ export class WorkerAppService {
     const user = await this.requireUser(token);
     const followedStudios = await this.getPlayerFollowedStudioRows(user.appUser.id);
     const studios = await this.getStudiosByIds(followedStudios.map((row) => row.studio_id));
-    const linksByStudioId = await this.getStudioLinksByStudioIds(studios.map((studio) => studio.id));
-    const followerCountByStudioId = await this.getStudioFollowerCounts(studios.map((studio) => studio.id));
+    const [linksByStudioId, followerCountByStudioId, mediaByStudioId] = await Promise.all([
+      this.getStudioLinksByStudioIds(studios.map((studio) => studio.id)),
+      this.getStudioFollowerCounts(studios.map((studio) => studio.id)),
+      this.getStudioMediaByStudioIds(studios.map((studio) => studio.id)),
+    ]);
     const studioById = new Map(studios.map((studio) => [studio.id, studio]));
 
     return {
@@ -1762,7 +2042,12 @@ export class WorkerAppService {
             return null;
           }
 
-          return this.buildStudioSummary(studio, linksByStudioId.get(studio.id) ?? [], followerCountByStudioId.get(studio.id) ?? 0);
+          return this.buildStudioSummary(
+            studio,
+            linksByStudioId.get(studio.id) ?? [],
+            followerCountByStudioId.get(studio.id) ?? 0,
+            mediaByStudioId.get(studio.id) ?? []
+          );
         })
         .filter((studio): studio is Studio => Boolean(studio))
     };
@@ -2096,13 +2381,23 @@ export class WorkerAppService {
 
   async listPublicStudios(): Promise<StudioListResponse> {
     const studios = await this.getStudios();
-    const linksByStudioId = await this.getStudioLinksByStudioIds(studios.map((studio) => studio.id));
-    const followerCountByStudioId = await this.getStudioFollowerCounts(studios.map((studio) => studio.id));
+    const [linksByStudioId, followerCountByStudioId, mediaByStudioId] = await Promise.all([
+      this.getStudioLinksByStudioIds(studios.map((studio) => studio.id)),
+      this.getStudioFollowerCounts(studios.map((studio) => studio.id)),
+      this.getStudioMediaByStudioIds(studios.map((studio) => studio.id)),
+    ]);
 
     return {
       studios: studios
         .sort((left, right) => left.display_name.localeCompare(right.display_name))
-        .map((studio) => this.buildStudioSummary(studio, linksByStudioId.get(studio.id) ?? [], followerCountByStudioId.get(studio.id) ?? 0))
+        .map((studio) =>
+          this.buildStudioSummary(
+            studio,
+            linksByStudioId.get(studio.id) ?? [],
+            followerCountByStudioId.get(studio.id) ?? 0,
+            mediaByStudioId.get(studio.id) ?? []
+          )
+        )
     };
   }
 
@@ -2131,9 +2426,10 @@ export class WorkerAppService {
     const titles = await this.getTitlesByIds(spotlightRows.map((row) => row.title_id));
     const publicTitles = titles.filter(isPublicCatalogDetail);
     const titleById = new Map(publicTitles.map((title) => [title.id, title]));
-    const [studios, mediaByTitleId, showcaseByTitleId, currentReleaseById] = await Promise.all([
+    const [studios, mediaByTitleId, catalogMediaByTitleId, showcaseByTitleId, currentReleaseById] = await Promise.all([
       this.getStudiosByIds(publicTitles.map((title) => title.studio_id)),
       this.getTitleMediaByTitleIds(publicTitles.map((title) => title.id)),
+      this.getCatalogMediaByTitleIds(publicTitles.map((title) => title.id)),
       this.getTitleShowcaseMediaByTitleIds(publicTitles.map((title) => title.id)),
       this.getTitleReleaseRowsByIds(
         publicTitles.map((title) => title.current_release_id).filter((value): value is string => Boolean(value))
@@ -2160,6 +2456,7 @@ export class WorkerAppService {
               title,
               studio,
               mediaByTitleId.get(title.id) ?? [],
+              catalogMediaByTitleId.get(title.id) ?? [],
               showcaseByTitleId.get(title.id) ?? [],
               currentReleaseById.get(title.current_release_id ?? "")
             )
@@ -2186,13 +2483,21 @@ export class WorkerAppService {
     };
   }
 
-  async getPublicStudio(slug: string): Promise<StudioResponse> {
-    const studio = await this.getStudioBySlug(slug);
-    const linksByStudioId = await this.getStudioLinksByStudioIds([studio.id]);
-    const followerCountByStudioId = await this.getStudioFollowerCounts([studio.id]);
+  async getPublicStudio(studioIdentifier: string): Promise<StudioResponse> {
+    const studio = await this.getStudioByIdentifier(studioIdentifier);
+    const [linksByStudioId, followerCountByStudioId, mediaByStudioId] = await Promise.all([
+      this.getStudioLinksByStudioIds([studio.id]),
+      this.getStudioFollowerCounts([studio.id]),
+      this.getStudioMediaByStudioIds([studio.id]),
+    ]);
 
     return {
-      studio: this.buildStudio(studio, linksByStudioId.get(studio.id) ?? [], followerCountByStudioId.get(studio.id) ?? 0)
+      studio: this.buildStudio(
+        studio,
+        linksByStudioId.get(studio.id) ?? [],
+        followerCountByStudioId.get(studio.id) ?? 0,
+        mediaByStudioId.get(studio.id) ?? []
+      )
     };
   }
 
@@ -2200,15 +2505,23 @@ export class WorkerAppService {
     const user = await this.requireUser(token);
     const memberships = await this.getStudioMembershipsForUser(user.appUser.id);
     const studios = memberships.length > 0 ? await this.getStudiosByIds(memberships.map((membership) => membership.studio_id)) : [];
-    const linksByStudioId = await this.getStudioLinksByStudioIds(studios.map((studio) => studio.id));
-    const followerCountByStudioId = await this.getStudioFollowerCounts(studios.map((studio) => studio.id));
+    const [linksByStudioId, followerCountByStudioId, mediaByStudioId] = await Promise.all([
+      this.getStudioLinksByStudioIds(studios.map((studio) => studio.id)),
+      this.getStudioFollowerCounts(studios.map((studio) => studio.id)),
+      this.getStudioMediaByStudioIds(studios.map((studio) => studio.id)),
+    ]);
     const roleByStudioId = new Map(memberships.map((membership) => [membership.studio_id, membership.role]));
 
     return {
       studios: studios
         .sort((left, right) => left.display_name.localeCompare(right.display_name))
         .map((studio) => ({
-          ...this.buildStudioSummary(studio, linksByStudioId.get(studio.id) ?? [], followerCountByStudioId.get(studio.id) ?? 0),
+          ...this.buildStudioSummary(
+            studio,
+            linksByStudioId.get(studio.id) ?? [],
+            followerCountByStudioId.get(studio.id) ?? 0,
+            mediaByStudioId.get(studio.id) ?? []
+          ),
           role: roleByStudioId.get(studio.id) ?? "editor"
         }))
     };
@@ -2221,21 +2534,19 @@ export class WorkerAppService {
     }
 
     this.validateStudioMutation(input);
-    const existing = await this.findStudioBySlug(input.slug);
+    const nextSlug = deriveStudioSlug(input.displayName);
+    const existing = await this.findStudioBySlug(nextSlug);
     if (existing) {
-      throw problem(409, "studio_slug_conflict", "Studio already exists", "The supplied studio slug is already in use.");
+      throw problem(409, "studio_slug_conflict", "Studio already exists", "The derived studio slug is already in use.");
     }
 
     const now = new Date().toISOString();
     const { data, error } = await this.client
       .from("studios")
       .insert({
-        slug: input.slug,
+        slug: nextSlug,
         display_name: input.displayName,
         description: input.description ?? null,
-        avatar_url: input.avatarUrl ?? null,
-        logo_url: input.logoUrl ?? null,
-        banner_url: input.bannerUrl ?? null,
         created_by_user_id: user.appUser.id,
         created_at: now,
         updated_at: now
@@ -2258,8 +2569,9 @@ export class WorkerAppService {
       throw problem(500, "studio_create_failed", "Studio creation failed.", membershipError.message);
     }
 
+    const mediaByStudioId = await this.getStudioMediaByStudioIds([studio.id]);
     return {
-      studio: this.buildStudio(studio, [], 0)
+      studio: this.buildStudio(studio, [], 0, mediaByStudioId.get(studio.id) ?? [])
     };
   }
 
@@ -2269,20 +2581,18 @@ export class WorkerAppService {
     await this.requireStudioAccess(user.appUser.id, studio.id);
     this.validateStudioMutation(input);
 
-    const existing = await this.findStudioBySlug(input.slug);
+    const nextSlug = deriveStudioSlug(input.displayName);
+    const existing = await this.findStudioBySlug(nextSlug);
     if (existing && existing.id !== studio.id) {
-      throw problem(409, "studio_slug_conflict", "Studio already exists", "The supplied studio slug is already in use.");
+      throw problem(409, "studio_slug_conflict", "Studio already exists", "The derived studio slug is already in use.");
     }
 
     const { error } = await this.client
       .from("studios")
       .update({
-        slug: input.slug,
+        slug: nextSlug,
         display_name: input.displayName,
         description: input.description ?? null,
-        avatar_url: input.avatarUrl ?? null,
-        logo_url: input.logoUrl ?? null,
-        banner_url: input.bannerUrl ?? null,
         updated_at: new Date().toISOString()
       })
       .eq("id", studio.id);
@@ -2291,10 +2601,18 @@ export class WorkerAppService {
     }
 
     const refreshedStudio = await this.getStudioById(studio.id);
-    const links = (await this.getStudioLinksByStudioIds([studio.id])).get(studio.id) ?? [];
-    const followerCountByStudioId = await this.getStudioFollowerCounts([studio.id]);
+    const [linksByStudioId, followerCountByStudioId, mediaByStudioId] = await Promise.all([
+      this.getStudioLinksByStudioIds([studio.id]),
+      this.getStudioFollowerCounts([studio.id]),
+      this.getStudioMediaByStudioIds([studio.id]),
+    ]);
     return {
-      studio: this.buildStudio(refreshedStudio, links, followerCountByStudioId.get(studio.id) ?? 0)
+      studio: this.buildStudio(
+        refreshedStudio,
+        linksByStudioId.get(studio.id) ?? [],
+        followerCountByStudioId.get(studio.id) ?? 0,
+        mediaByStudioId.get(studio.id) ?? []
+      )
     };
   }
 
@@ -2420,11 +2738,30 @@ export class WorkerAppService {
       throw problem(500, "studio_media_upload_failed", "Studio media upload failed.", updateError.message);
     }
 
-    const links = (await this.getStudioLinksByStudioIds([studio.id])).get(studio.id) ?? [];
+    await this.upsertCatalogMediaEntryForOwner("studio", studio.id, {
+      mediaTypeKey: studioMediaKindToTypeKey[kind],
+      kind: "image",
+      sourceUrl: publicUrl,
+      altText: null,
+      mimeType: validatedFile.type,
+      width: null,
+      height: null,
+      displayOrder: 0,
+    });
+
     const refreshedStudio = await this.getStudioById(studio.id);
-    const followerCountByStudioId = await this.getStudioFollowerCounts([studio.id]);
+    const [linksByStudioId, followerCountByStudioId, mediaByStudioId] = await Promise.all([
+      this.getStudioLinksByStudioIds([studio.id]),
+      this.getStudioFollowerCounts([studio.id]),
+      this.getStudioMediaByStudioIds([studio.id]),
+    ]);
     return {
-      studio: this.buildStudio(refreshedStudio, links, followerCountByStudioId.get(studio.id) ?? 0)
+      studio: this.buildStudio(
+        refreshedStudio,
+        linksByStudioId.get(studio.id) ?? [],
+        followerCountByStudioId.get(studio.id) ?? 0,
+        mediaByStudioId.get(studio.id) ?? []
+      )
     };
   }
 
@@ -2434,8 +2771,9 @@ export class WorkerAppService {
 
     const studio = await this.getStudioById(studioId);
     const titles = await this.getTitlesByStudioId(studioId);
-    const [mediaByTitleId, currentReleaseById, collectionCountsByTitleId] = await Promise.all([
+    const [mediaByTitleId, catalogMediaByTitleId, currentReleaseById, collectionCountsByTitleId] = await Promise.all([
       this.getTitleMediaByTitleIds(titles.map((title) => title.id)),
+      this.getCatalogMediaByTitleIds(titles.map((title) => title.id)),
       this.getTitleReleaseRowsByIds(
         titles.map((title) => title.current_release_id).filter((value): value is string => Boolean(value))
       ),
@@ -2450,6 +2788,7 @@ export class WorkerAppService {
             title,
             studio,
             mediaByTitleId.get(title.id) ?? [],
+            catalogMediaByTitleId.get(title.id) ?? [],
             currentReleaseById.get(title.current_release_id ?? ""),
             collectionCountsByTitleId.get(title.id),
           )
@@ -2490,6 +2829,7 @@ export class WorkerAppService {
         genre_display: genreDisplay,
         min_players: metadata.minPlayers,
         max_players: metadata.maxPlayers,
+        max_players_or_more: metadata.maxPlayersOrMore,
         age_rating_authority: ageRatingAuthorityCode,
         age_rating_value: metadata.ageRatingValue?.trim() ? metadata.ageRatingValue.trim() : null,
         min_age_years: metadata.minAgeYears,
@@ -2518,6 +2858,7 @@ export class WorkerAppService {
       genre_display: genreDisplay,
       min_players: metadata.minPlayers,
       max_players: metadata.maxPlayers,
+      max_players_or_more: metadata.maxPlayersOrMore,
       age_rating_authority: ageRatingAuthorityCode,
       age_rating_value: metadata.ageRatingValue?.trim() ? metadata.ageRatingValue.trim() : null,
       min_age_years: metadata.minAgeYears,
@@ -2681,6 +3022,9 @@ export class WorkerAppService {
     await this.ensureDerivedTitleSlugAvailable(title, input.displayName);
 
     if (this.titleMetadataMatchesCurrentVersion(currentVersion, currentGenreSlugs, input, genreDisplay, ageRatingAuthorityCode)) {
+      if (deriveTitleSlug(input.displayName) !== title.slug) {
+        await this.syncTitleFromMetadataVersion(title.id, currentVersion);
+      }
       return {
         title: await this.getDeveloperTitleDetails(user.appUser.id, title.id)
       };
@@ -2708,6 +3052,7 @@ export class WorkerAppService {
       genre_display: genreDisplay,
       min_players: input.minPlayers,
       max_players: input.maxPlayers,
+      max_players_or_more: input.maxPlayersOrMore,
       age_rating_authority: ageRatingAuthorityCode,
       age_rating_value: input.ageRatingValue?.trim() ? input.ageRatingValue.trim() : null,
       min_age_years: input.minAgeYears,
@@ -2765,6 +3110,126 @@ export class WorkerAppService {
     };
   }
 
+  async listCatalogMediaTypes(token: string): Promise<CatalogMediaTypeListResponse> {
+    await this.requireUser(token);
+    return {
+      mediaTypes: (await this.getCatalogMediaTypeRows()).map(mapCatalogMediaTypeDefinition)
+    };
+  }
+
+  async listStudioCatalogMedia(token: string, studioId: string): Promise<CatalogMediaEntryListResponse> {
+    const user = await this.requireUser(token);
+    await this.requireStudioAccess(user.appUser.id, studioId);
+    return {
+      mediaEntries: (await this.getCatalogMediaEntriesForStudio(studioId)).map(mapCatalogMediaEntry)
+    };
+  }
+
+  async createStudioCatalogMedia(
+    token: string,
+    studioId: string,
+    input: CreateCatalogMediaEntryRequest
+  ): Promise<CatalogMediaEntryResponse> {
+    const user = await this.requireUser(token);
+    await this.requireStudioAccess(user.appUser.id, studioId);
+    const mediaEntry = await this.createCatalogMediaEntryForOwner("studio", studioId, input);
+    await this.syncStudioLegacyMediaProjection(studioId, mediaEntry);
+    return {
+      mediaEntry: mapCatalogMediaEntry(mediaEntry)
+    };
+  }
+
+  async updateStudioCatalogMedia(
+    token: string,
+    studioId: string,
+    mediaEntryId: string,
+    input: UpdateCatalogMediaEntryRequest
+  ): Promise<CatalogMediaEntryResponse> {
+    const user = await this.requireUser(token);
+    await this.requireStudioAccess(user.appUser.id, studioId);
+    const mediaEntry = await this.updateCatalogMediaEntryForOwner("studio", studioId, mediaEntryId, input);
+    await this.syncStudioLegacyMediaProjection(studioId, mediaEntry);
+    return {
+      mediaEntry: mapCatalogMediaEntry(mediaEntry)
+    };
+  }
+
+  async deleteStudioCatalogMedia(token: string, studioId: string, mediaEntryId: string): Promise<void> {
+    const user = await this.requireUser(token);
+    await this.requireStudioAccess(user.appUser.id, studioId);
+    const existing = await this.requireCatalogMediaEntry("studio", studioId, mediaEntryId);
+    await this.deleteCatalogMediaEntryForOwner("studio", studioId, mediaEntryId);
+    await this.syncStudioLegacyMediaProjection(studioId, existing.media_type_key, null);
+  }
+
+  async uploadStudioCatalogMediaImage(
+    token: string,
+    studioId: string,
+    mediaEntryId: string,
+    file: File | null
+  ): Promise<CatalogMediaEntryResponse> {
+    const user = await this.requireUser(token);
+    await this.requireStudioAccess(user.appUser.id, studioId);
+    const mediaEntry = await this.uploadCatalogMediaEntryImageForOwner("studio", studioId, mediaEntryId, file, null);
+    await this.syncStudioLegacyMediaProjection(studioId, mediaEntry);
+    return {
+      mediaEntry: mapCatalogMediaEntry(mediaEntry)
+    };
+  }
+
+  async listTitleCatalogMedia(token: string, titleId: string): Promise<CatalogMediaEntryListResponse> {
+    const user = await this.requireUser(token);
+    const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
+    return {
+      mediaEntries: (await this.getCatalogMediaEntriesForTitle(title.id)).map(mapCatalogMediaEntry)
+    };
+  }
+
+  async createTitleCatalogMedia(
+    token: string,
+    titleId: string,
+    input: CreateCatalogMediaEntryRequest
+  ): Promise<CatalogMediaEntryResponse> {
+    const user = await this.requireUser(token);
+    const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
+    return {
+      mediaEntry: mapCatalogMediaEntry(await this.createCatalogMediaEntryForOwner("title", title.id, input))
+    };
+  }
+
+  async updateTitleCatalogMedia(
+    token: string,
+    titleId: string,
+    mediaEntryId: string,
+    input: UpdateCatalogMediaEntryRequest
+  ): Promise<CatalogMediaEntryResponse> {
+    const user = await this.requireUser(token);
+    const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
+    return {
+      mediaEntry: mapCatalogMediaEntry(await this.updateCatalogMediaEntryForOwner("title", title.id, mediaEntryId, input))
+    };
+  }
+
+  async deleteTitleCatalogMedia(token: string, titleId: string, mediaEntryId: string): Promise<void> {
+    const user = await this.requireUser(token);
+    const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
+    await this.deleteCatalogMediaEntryForOwner("title", title.id, mediaEntryId);
+  }
+
+  async uploadTitleCatalogMediaImage(
+    token: string,
+    titleId: string,
+    mediaEntryId: string,
+    file: File | null,
+    altText: string | null
+  ): Promise<CatalogMediaEntryResponse> {
+    const user = await this.requireUser(token);
+    const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
+    return {
+      mediaEntry: mapCatalogMediaEntry(await this.uploadCatalogMediaEntryImageForOwner("title", title.id, mediaEntryId, file, altText))
+    };
+  }
+
   async getTitleMediaAssets(token: string, titleId: string): Promise<TitleMediaAssetListResponse> {
     const user = await this.requireUser(token);
     const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
@@ -2789,29 +3254,24 @@ export class WorkerAppService {
     const user = await this.requireUser(token);
     const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
     this.validateCreateTitleShowcaseMediaInput(input);
-
-    const now = new Date().toISOString();
-    const { data, error } = await this.client
-      .from("title_showcase_media")
-      .insert({
-        title_id: title.id,
-        kind: input.kind,
-        image_url: null,
-        image_storage_path: null,
-        video_url: input.kind === "external_video" && input.videoUrl?.trim() ? input.videoUrl.trim() : null,
-        alt_text: trimNullableString(input.altText, 280),
-        display_order: input.displayOrder,
-        created_at: now,
-        updated_at: now
-      })
-      .select("*")
-      .single();
-    if (error) {
-      throw problem(500, "title_showcase_media_create_failed", "Title showcase media creation failed.", error.message);
+    const mediaEntry = await this.createCatalogMediaEntryForOwner("title", title.id, {
+      mediaTypeKey: "title_showcase",
+      kind: input.kind,
+      sourceUrl: input.kind === "image" ? input.imageUrl?.trim() ?? "https://boardenthusiasts.invalid/pending-upload" : null,
+      videoUrl: input.kind === "external_video" ? input.videoUrl : null,
+      altText: input.altText,
+      mimeType: null,
+      width: null,
+      height: null,
+      displayOrder: input.displayOrder,
+    });
+    const showcaseMedia = mapCatalogMediaEntryToLegacyTitleShowcase(mediaEntry);
+    if (!showcaseMedia) {
+      throw problem(500, "title_showcase_media_create_failed", "Title showcase media creation failed.", "Unified title showcase entry could not be mapped.");
     }
 
     return {
-      showcaseMedia: mapTitleShowcaseMedia(data as unknown as TitleShowcaseMediaRow)
+      showcaseMedia: mapTitleShowcaseMedia(showcaseMedia)
     };
   }
 
@@ -2825,24 +3285,19 @@ export class WorkerAppService {
     const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
     const showcaseMedia = await this.requireTitleShowcaseMedia(title.id, showcaseMediaId);
     this.validateUpdateTitleShowcaseMediaInput(showcaseMedia.kind, input);
-
-    const { data, error } = await this.client
-      .from("title_showcase_media")
-      .update({
-        video_url: showcaseMedia.kind === "external_video" && input.videoUrl?.trim() ? input.videoUrl.trim() : null,
-        alt_text: trimNullableString(input.altText, 280),
-        display_order: input.displayOrder,
-        updated_at: new Date().toISOString()
-      })
-      .eq("id", showcaseMedia.id)
-      .select("*")
-      .single();
-    if (error) {
-      throw problem(500, "title_showcase_media_update_failed", "Title showcase media update failed.", error.message);
+    const mediaEntry = await this.updateCatalogMediaEntryForOwner("title", title.id, showcaseMedia.id, {
+      sourceUrl: showcaseMedia.kind === "image" ? input.imageUrl : undefined,
+      videoUrl: showcaseMedia.kind === "external_video" ? input.videoUrl : undefined,
+      altText: input.altText,
+      displayOrder: input.displayOrder,
+    });
+    const mappedShowcase = mapCatalogMediaEntryToLegacyTitleShowcase(mediaEntry);
+    if (!mappedShowcase) {
+      throw problem(500, "title_showcase_media_update_failed", "Title showcase media update failed.", "Unified title showcase entry could not be mapped.");
     }
 
     return {
-      showcaseMedia: mapTitleShowcaseMedia(data as unknown as TitleShowcaseMediaRow)
+      showcaseMedia: mapTitleShowcaseMedia(mappedShowcase)
     };
   }
 
@@ -2868,22 +3323,35 @@ export class WorkerAppService {
     }
 
     const publicUrl = this.client.storage.from(bucket).getPublicUrl(storagePath).data.publicUrl;
-    const { data, error } = await this.client
-      .from("title_showcase_media")
-      .update({
-        image_url: publicUrl,
-        image_storage_path: storagePath,
-        updated_at: new Date().toISOString()
-      })
-      .eq("id", showcaseMedia.id)
-      .select("*")
-      .single();
+    const updatePayload =
+      showcaseMedia.kind === "external_video"
+        ? {
+            preview_image_url: publicUrl,
+            preview_storage_path: storagePath,
+            mime_type: validatedFile.type,
+            updated_at: new Date().toISOString(),
+          }
+        : {
+            source_url: publicUrl,
+            storage_path: storagePath,
+            mime_type: validatedFile.type,
+            updated_at: new Date().toISOString(),
+          };
+    const { error } = await this.client
+      .from("catalog_media_entries")
+      .update(updatePayload)
+      .eq("id", showcaseMedia.id);
     if (error) {
       throw problem(500, "title_showcase_media_update_failed", "Title showcase media update failed.", error.message);
     }
+    const refreshedEntry = await this.requireCatalogMediaEntry("title", title.id, showcaseMedia.id);
+    const mappedShowcase = mapCatalogMediaEntryToLegacyTitleShowcase(refreshedEntry);
+    if (!mappedShowcase) {
+      throw problem(500, "title_showcase_media_update_failed", "Title showcase media update failed.", "Unified title showcase entry could not be mapped.");
+    }
 
     return {
-      showcaseMedia: mapTitleShowcaseMedia(data as unknown as TitleShowcaseMediaRow)
+      showcaseMedia: mapTitleShowcaseMedia(mappedShowcase)
     };
   }
 
@@ -2891,15 +3359,7 @@ export class WorkerAppService {
     const user = await this.requireUser(token);
     const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
     await this.requireTitleShowcaseMedia(title.id, showcaseMediaId);
-
-    const { error } = await this.client
-      .from("title_showcase_media")
-      .delete()
-      .eq("id", showcaseMediaId)
-      .eq("title_id", title.id);
-    if (error) {
-      throw problem(500, "title_showcase_media_delete_failed", "Title showcase media delete failed.", error.message);
-    }
+    await this.deleteCatalogMediaEntryForOwner("title", title.id, showcaseMediaId);
   }
 
   async upsertTitleMediaAsset(
@@ -2912,31 +3372,23 @@ export class WorkerAppService {
     const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
     this.validateTitleMediaRole(mediaRole);
     this.validateTitleMediaAssetInput(input);
-
-    const { data, error } = await this.client
-      .from("title_media_assets")
-      .upsert(
-        {
-          title_id: title.id,
-          media_role: mediaRole,
-          source_url: input.sourceUrl,
-          storage_path: null,
-          alt_text: input.altText,
-          mime_type: input.mimeType,
-          width: input.width,
-          height: input.height,
-          updated_at: new Date().toISOString()
-        },
-        { onConflict: "title_id,media_role" }
-      )
-      .select("*")
-      .single();
-    if (error) {
-      throw problem(500, "title_media_upsert_failed", "Title media update failed.", error.message);
+    const mediaEntry = await this.upsertCatalogMediaEntryForOwner("title", title.id, {
+      mediaTypeKey: titleMediaRoleToTypeKey[mediaRole as keyof typeof titleMediaRoleToTypeKey],
+      kind: "image",
+      sourceUrl: input.sourceUrl,
+      altText: input.altText,
+      mimeType: input.mimeType,
+      width: input.width,
+      height: input.height,
+      displayOrder: 0,
+    });
+    const mappedAsset = mapCatalogMediaEntryToLegacyTitleAsset(mediaEntry);
+    if (!mappedAsset) {
+      throw problem(500, "title_media_upsert_failed", "Title media update failed.", "Unified title media entry could not be mapped.");
     }
 
     return {
-      mediaAsset: mapTitleMediaAsset(data as unknown as TitleMediaAssetRow)
+      mediaAsset: mapTitleMediaAsset(mappedAsset)
     };
   }
 
@@ -2964,27 +3416,36 @@ export class WorkerAppService {
     }
 
     const publicUrl = this.client.storage.from(bucket).getPublicUrl(storagePath).data.publicUrl;
-    return this.upsertTitleMediaAsset(token, titleId, mediaRole, {
+    const response = await this.upsertTitleMediaAsset(token, titleId, mediaRole, {
       sourceUrl: publicUrl,
       altText: altText?.trim() ? altText.trim() : null,
       mimeType: validatedFile.type,
       width: null,
       height: null
     });
+    const { error } = await this.client
+      .from("catalog_media_entries")
+      .update({
+        storage_path: storagePath,
+        updated_at: new Date().toISOString()
+      })
+      .eq("title_id", title.id)
+      .eq("media_type_key", titleMediaRoleToTypeKey[mediaRole as keyof typeof titleMediaRoleToTypeKey]);
+    if (error) {
+      throw problem(500, "title_media_upload_failed", "Title media upload failed.", error.message);
+    }
+    return response;
   }
 
   async deleteTitleMediaAsset(token: string, titleId: string, mediaRole: string): Promise<void> {
     const user = await this.requireUser(token);
     const title = await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
     this.validateTitleMediaRole(mediaRole);
-
-    const { error } = await this.client
-      .from("title_media_assets")
-      .delete()
-      .eq("title_id", title.id)
-      .eq("media_role", mediaRole);
-    if (error) {
-      throw problem(500, "title_media_delete_failed", "Title media delete failed.", error.message);
+    const existingEntry = (await this.getCatalogMediaEntriesForTitle(title.id)).find(
+      (entry) => entry.media_type_key === titleMediaRoleToTypeKey[mediaRole as keyof typeof titleMediaRoleToTypeKey]
+    );
+    if (existingEntry) {
+      await this.deleteCatalogMediaEntryForOwner("title", title.id, existingEntry.id);
     }
   }
 
@@ -3175,7 +3636,10 @@ export class WorkerAppService {
     const allTitles = await this.getTitles();
     const allStudios = await this.getStudiosByIds(allTitles.map((title) => title.studio_id));
     const studiosById = new Map(allStudios.map((studio) => [studio.id, studio]));
-    const mediaByTitleId = await this.getTitleMediaByTitleIds(allTitles.map((title) => title.id));
+    const [mediaByTitleId, catalogMediaByTitleId] = await Promise.all([
+      this.getTitleMediaByTitleIds(allTitles.map((title) => title.id)),
+      this.getCatalogMediaByTitleIds(allTitles.map((title) => title.id)),
+    ]);
     const currentReleaseById = await this.getTitleReleaseRowsByIds(
       allTitles.map((title) => title.current_release_id).filter((value): value is string => Boolean(value))
     );
@@ -3248,7 +3712,7 @@ export class WorkerAppService {
         return parseCatalogGenreTags(title.genre_display).some((genreTag) => selectedGenres.has(normalizeGenreSlug(genreTag)));
       })
       .filter((title) => {
-        if (query.minPlayers !== undefined && title.max_players < query.minPlayers) {
+        if (query.minPlayers !== undefined && !supportsAtLeastPlayerCount(title, query.minPlayers)) {
           return false;
         }
         if (query.maxPlayers !== undefined && title.min_players > query.maxPlayers) {
@@ -3289,9 +3753,9 @@ export class WorkerAppService {
           case "genre-asc":
             return left.genre_display.localeCompare(right.genre_display) || byTitle;
           case "players-asc":
-            return left.max_players - right.max_players || left.min_players - right.min_players || byTitle;
+            return comparePlayerRange(left, right) || byTitle;
           case "players-desc":
-            return right.max_players - left.max_players || right.min_players - left.min_players || byTitle;
+            return comparePlayerRange(right, left) || byTitle;
           case "age-asc":
             return left.min_age_years - right.min_age_years || byTitle;
           case "age-desc":
@@ -3318,6 +3782,7 @@ export class WorkerAppService {
           title,
           studio,
           mediaByTitleId.get(title.id) ?? [],
+          catalogMediaByTitleId.get(title.id) ?? [],
           currentReleaseById.get(title.current_release_id ?? ""),
           collectionCountsByTitleId.get(title.id),
         );
@@ -3333,9 +3798,9 @@ export class WorkerAppService {
     };
   }
 
-  async getCatalogTitle(token: string | null, studioSlug: string, titleSlug: string): Promise<CatalogTitleResponse> {
-    const studio = await this.getStudioBySlug(studioSlug);
-    const title = await this.getTitleByStudioAndSlug(studio.id, titleSlug);
+  async getCatalogTitle(token: string | null, studioIdentifier: string, titleIdentifier: string): Promise<CatalogTitleResponse> {
+    const studio = await this.getStudioByIdentifier(studioIdentifier);
+    const title = await this.getTitleByStudioAndIdentifier(studio.id, titleIdentifier);
     if (!isPublicCatalogDetail(title)) {
       if (!token?.trim()) {
         throw problem(404, "catalog_title_not_found", "Catalog title not found", "The requested title was not found.");
@@ -3351,8 +3816,9 @@ export class WorkerAppService {
       }
     }
 
-    const [mediaByTitleId, showcaseByTitleId, currentReleaseById, collectionCountsByTitleId] = await Promise.all([
+    const [mediaByTitleId, catalogMediaByTitleId, showcaseByTitleId, currentReleaseById, collectionCountsByTitleId] = await Promise.all([
       this.getTitleMediaByTitleIds([title.id]),
+      this.getCatalogMediaByTitleIds([title.id]),
       this.getTitleShowcaseMediaByTitleIds([title.id]),
       this.getTitleReleaseRowsByIds(title.current_release_id ? [title.current_release_id] : []),
       this.getTitleCollectionCounts([title.id]),
@@ -3362,6 +3828,7 @@ export class WorkerAppService {
         title,
         studio,
         mediaByTitleId.get(title.id) ?? [],
+        catalogMediaByTitleId.get(title.id) ?? [],
         showcaseByTitleId.get(title.id) ?? [],
         currentReleaseById.get(title.current_release_id ?? ""),
         collectionCountsByTitleId.get(title.id),
@@ -3700,20 +4167,10 @@ export class WorkerAppService {
   private validateStudioMutation(input: StudioMutationRequest): void {
     const errors: Record<string, string[]> = {};
 
-    if (!validateStudioSlug(input.slug)) {
-      errors.slug = ["Slug must contain only lowercase letters, numbers, and single hyphen separators."];
-    }
     if (!input.displayName || input.displayName.trim().length === 0) {
       errors.displayName = ["Display name is required."];
-    }
-    if (input.logoUrl && !isAbsoluteUrl(input.logoUrl)) {
-      errors.logoUrl = ["Logo URL must be an absolute URI."];
-    }
-    if (input.bannerUrl && !isAbsoluteUrl(input.bannerUrl)) {
-      errors.bannerUrl = ["Banner URL must be an absolute URI."];
-    }
-    if (input.avatarUrl && !isAbsoluteUrl(input.avatarUrl)) {
-      errors.avatarUrl = ["Avatar URL must be an absolute URI."];
+    } else if (!deriveStudioSlug(input.displayName)) {
+      errors.displayName = ["Display name must contain at least one letter or number."];
     }
 
     if (Object.keys(errors).length > 0) {
@@ -3732,6 +4189,326 @@ export class WorkerAppService {
 
     if (Object.keys(errors).length > 0) {
       throw validationProblem(errors);
+    }
+  }
+
+  private async getCatalogMediaTypeDefinition(
+    mediaTypeKey: CatalogMediaTypeKey,
+    ownerKind: MediaOwnerKind
+  ): Promise<CatalogMediaTypeDefinitionRow> {
+    const { data, error } = await this.client
+      .from("catalog_media_type_definitions")
+      .select("*")
+      .eq("key", mediaTypeKey)
+      .eq("owner_kind", ownerKind)
+      .limit(1);
+    if (error) {
+      throw problem(500, "catalog_media_type_lookup_failed", "Catalog media type lookup failed.", error.message);
+    }
+
+    const definition = (data as CatalogMediaTypeDefinitionRow[])[0];
+    if (!definition) {
+      throw validationProblem({
+        mediaTypeKey: ["Media type is invalid for this owner."]
+      });
+    }
+
+    return definition;
+  }
+
+  private validateCatalogMediaEntryCreate(
+    definition: CatalogMediaTypeDefinitionRow,
+    input: CreateCatalogMediaEntryRequest
+  ): void {
+    const errors: Record<string, string[]> = {};
+    if (!Number.isInteger(input.displayOrder ?? 0) || (input.displayOrder ?? 0) < 0) {
+      errors.displayOrder = ["Display order must be a whole number zero or greater."];
+    }
+    if (input.kind === "external_video") {
+      if (!definition.supports_video) {
+        errors.kind = ["This media type only supports image entries."];
+      }
+      if (!input.videoUrl?.trim() || !isAbsoluteUrl(input.videoUrl)) {
+        errors.videoUrl = ["Video URL must be an absolute URI for external video entries."];
+      }
+      if (input.sourceUrl?.trim()) {
+        errors.sourceUrl = ["External video entries cannot include an image source URL."];
+      }
+    } else if (input.kind === "image") {
+      if (!input.sourceUrl?.trim() || !isAbsoluteUrl(input.sourceUrl)) {
+        errors.sourceUrl = ["Media source URL must be an absolute URI for image entries."];
+      }
+      if (input.videoUrl?.trim()) {
+        errors.videoUrl = ["Image entries cannot include a video URL."];
+      }
+    } else {
+      errors.kind = ["Media kind must be either image or external_video."];
+    }
+    if ((input.width === null) !== (input.height === null)) {
+      errors.dimensions = ["Width and height must both be supplied together."];
+    }
+    if ((input.width ?? 1) <= 0 || (input.height ?? 1) <= 0) {
+      errors.dimensions = ["Width and height must be positive integers when supplied."];
+    }
+    if (Object.keys(errors).length > 0) {
+      throw validationProblem(errors);
+    }
+  }
+
+  private validateCatalogMediaEntryUpdate(
+    definition: CatalogMediaTypeDefinitionRow,
+    existing: CatalogMediaEntryRow,
+    input: UpdateCatalogMediaEntryRequest
+  ): void {
+    const errors: Record<string, string[]> = {};
+    if (input.displayOrder !== undefined && (!Number.isInteger(input.displayOrder) || input.displayOrder < 0)) {
+      errors.displayOrder = ["Display order must be a whole number zero or greater."];
+    }
+    if (existing.kind === "external_video") {
+      if (!definition.supports_video) {
+        errors.kind = ["This media type only supports image entries."];
+      }
+      if (input.videoUrl !== undefined && input.videoUrl !== null && (!input.videoUrl.trim() || !isAbsoluteUrl(input.videoUrl))) {
+        errors.videoUrl = ["Video URL must be an absolute URI for external video entries."];
+      }
+      if (input.sourceUrl?.trim()) {
+        errors.sourceUrl = ["External video entries cannot include an image source URL."];
+      }
+    } else {
+      if (input.sourceUrl !== undefined && input.sourceUrl !== null && (!input.sourceUrl.trim() || !isAbsoluteUrl(input.sourceUrl))) {
+        errors.sourceUrl = ["Media source URL must be an absolute URI for image entries."];
+      }
+      if (input.videoUrl?.trim()) {
+        errors.videoUrl = ["Image entries cannot include a video URL."];
+      }
+    }
+    if ((input.width === null) !== (input.height === null)) {
+      errors.dimensions = ["Width and height must both be supplied together."];
+    }
+    if ((input.width ?? 1) <= 0 || (input.height ?? 1) <= 0) {
+      errors.dimensions = ["Width and height must be positive integers when supplied."];
+    }
+    if (Object.keys(errors).length > 0) {
+      throw validationProblem(errors);
+    }
+  }
+
+  private async createCatalogMediaEntryForOwner(
+    ownerKind: MediaOwnerKind,
+    ownerId: string,
+    input: CreateCatalogMediaEntryRequest
+  ): Promise<CatalogMediaEntryRow> {
+    const definition = await this.getCatalogMediaTypeDefinition(input.mediaTypeKey, ownerKind);
+    this.validateCatalogMediaEntryCreate(definition, input);
+    const now = new Date().toISOString();
+    const ownerColumn = ownerKind === "studio" ? "studio_id" : "title_id";
+    const ownerEntries = ownerKind === "studio"
+      ? await this.getCatalogMediaEntriesForStudio(ownerId)
+      : await this.getCatalogMediaEntriesForTitle(ownerId);
+    const existingSingle = definition.allows_multiple
+      ? null
+      : ownerEntries.find((entry) => entry.media_type_key === input.mediaTypeKey);
+    const payload = {
+      [ownerColumn]: ownerId,
+      media_type_key: input.mediaTypeKey,
+      kind: input.kind,
+      source_url: input.kind === "image" ? input.sourceUrl?.trim() ?? null : null,
+      storage_path: null,
+      preview_image_url: null,
+      preview_storage_path: null,
+      video_url: input.kind === "external_video" ? input.videoUrl?.trim() ?? null : null,
+      alt_text: trimNullableString(input.altText, 280),
+      mime_type: input.mimeType ?? null,
+      width: input.width ?? null,
+      height: input.height ?? null,
+      display_order: input.displayOrder ?? 0,
+      updated_at: now,
+    };
+
+    if (existingSingle) {
+      const { data, error } = await this.client
+        .from("catalog_media_entries")
+        .update(payload)
+        .eq("id", existingSingle.id)
+        .select("*")
+        .single();
+      if (error) {
+        throw problem(500, "catalog_media_upsert_failed", "Catalog media update failed.", error.message);
+      }
+      return data as unknown as CatalogMediaEntryRow;
+    }
+
+    const { data, error } = await this.client
+      .from("catalog_media_entries")
+      .insert({
+        ...payload,
+        created_at: now,
+      })
+      .select("*")
+      .single();
+    if (error) {
+      throw problem(500, "catalog_media_create_failed", "Catalog media creation failed.", error.message);
+    }
+    return data as unknown as CatalogMediaEntryRow;
+  }
+
+  private async updateCatalogMediaEntryForOwner(
+    ownerKind: MediaOwnerKind,
+    ownerId: string,
+    mediaEntryId: string,
+    input: UpdateCatalogMediaEntryRequest
+  ): Promise<CatalogMediaEntryRow> {
+    const existing = await this.requireCatalogMediaEntry(ownerKind, ownerId, mediaEntryId);
+    const definition = await this.getCatalogMediaTypeDefinition(existing.media_type_key, ownerKind);
+    this.validateCatalogMediaEntryUpdate(definition, existing, input);
+    const nextSourceUrl = existing.kind === "image"
+      ? input.sourceUrl === undefined ? existing.source_url : input.sourceUrl?.trim() ?? null
+      : null;
+    const nextVideoUrl = existing.kind === "external_video"
+      ? input.videoUrl === undefined ? existing.video_url : input.videoUrl?.trim() ?? null
+      : null;
+
+    const { data, error } = await this.client
+      .from("catalog_media_entries")
+      .update({
+        source_url: nextSourceUrl,
+        preview_image_url: existing.preview_image_url,
+        preview_storage_path: existing.preview_storage_path,
+        video_url: nextVideoUrl,
+        alt_text: input.altText === undefined ? existing.alt_text : trimNullableString(input.altText, 280),
+        mime_type: input.mimeType === undefined ? existing.mime_type : input.mimeType,
+        width: input.width === undefined ? existing.width : input.width,
+        height: input.height === undefined ? existing.height : input.height,
+        display_order: input.displayOrder ?? existing.display_order,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", existing.id)
+      .select("*")
+      .single();
+    if (error) {
+      throw problem(500, "catalog_media_update_failed", "Catalog media update failed.", error.message);
+    }
+
+    return data as unknown as CatalogMediaEntryRow;
+  }
+
+  private async deleteCatalogMediaEntryForOwner(ownerKind: MediaOwnerKind, ownerId: string, mediaEntryId: string): Promise<void> {
+    await this.requireCatalogMediaEntry(ownerKind, ownerId, mediaEntryId);
+    const ownerColumn = ownerKind === "studio" ? "studio_id" : "title_id";
+    const { error } = await this.client
+      .from("catalog_media_entries")
+      .delete()
+      .eq("id", mediaEntryId)
+      .eq(ownerColumn, ownerId);
+    if (error) {
+      throw problem(500, "catalog_media_delete_failed", "Catalog media delete failed.", error.message);
+    }
+  }
+
+  private async uploadCatalogMediaEntryImageForOwner(
+    ownerKind: MediaOwnerKind,
+    ownerId: string,
+    mediaEntryId: string,
+    file: File | null,
+    altText: string | null
+  ): Promise<CatalogMediaEntryRow> {
+    const existing = await this.requireCatalogMediaEntry(ownerKind, ownerId, mediaEntryId);
+    if (existing.kind !== "image") {
+      throw validationProblem({
+        media: ["Only image media entries can accept uploaded files."]
+      });
+    }
+
+    const uploadSurface = uploadSurfaceByMediaTypeKey[existing.media_type_key];
+    const validatedFile = this.requireUploadFile(file, uploadSurface);
+    const bucket = this.getStorageBucketForSurface(uploadSurface);
+    const extension = this.extensionForMimeType(validatedFile.type);
+
+    let storagePath: string;
+    if (ownerKind === "studio") {
+      const studio = await this.getStudioById(ownerId);
+      storagePath = `studios/${studio.slug}/${existing.media_type_key}${extension}`;
+    } else {
+      const title = await this.getTitleById(ownerId);
+      const studio = await this.getStudioById(title.studio_id);
+      storagePath =
+        existing.media_type_key === "title_showcase"
+          ? `titles/${studio.slug}/${title.slug}/showcase/${existing.id}${extension}`
+          : `titles/${studio.slug}/${title.slug}/${existing.media_type_key}${extension}`;
+    }
+
+    const { error: uploadError } = await this.client.storage
+      .from(bucket)
+      .upload(storagePath, validatedFile, { contentType: validatedFile.type, upsert: true });
+    if (uploadError) {
+      throw problem(500, "catalog_media_upload_failed", "Catalog media image upload failed.", uploadError.message);
+    }
+
+    const publicUrl = this.client.storage.from(bucket).getPublicUrl(storagePath).data.publicUrl;
+    const { data, error } = await this.client
+      .from("catalog_media_entries")
+      .update({
+        source_url: publicUrl,
+        storage_path: storagePath,
+        alt_text: trimNullableString(altText, 280) ?? existing.alt_text,
+        mime_type: validatedFile.type,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", existing.id)
+      .select("*")
+      .single();
+    if (error) {
+      throw problem(500, "catalog_media_upload_failed", "Catalog media image upload failed.", error.message);
+    }
+
+    return data as unknown as CatalogMediaEntryRow;
+  }
+
+  private async upsertCatalogMediaEntryForOwner(
+    ownerKind: MediaOwnerKind,
+    ownerId: string,
+    input: CreateCatalogMediaEntryRequest
+  ): Promise<CatalogMediaEntryRow> {
+    return this.createCatalogMediaEntryForOwner(ownerKind, ownerId, input);
+  }
+
+  private async syncStudioLegacyMediaProjection(
+    studioId: string,
+    media: CatalogMediaEntryRow | CatalogMediaTypeKey,
+    currentEntry?: CatalogMediaEntryRow | null,
+  ): Promise<void> {
+    const mediaTypeKey = typeof media === "string" ? media : media.media_type_key;
+    const mediaEntry = typeof media === "string" ? currentEntry ?? null : media;
+
+    if (mediaTypeKey !== "studio_avatar" && mediaTypeKey !== "studio_logo" && mediaTypeKey !== "studio_banner") {
+      return;
+    }
+
+    const projectionUpdate =
+      mediaTypeKey === "studio_avatar"
+        ? {
+            avatar_url: mediaEntry?.source_url ?? null,
+            avatar_storage_path: mediaEntry?.storage_path ?? null,
+          }
+        : mediaTypeKey === "studio_logo"
+          ? {
+              logo_url: mediaEntry?.source_url ?? null,
+              logo_storage_path: mediaEntry?.storage_path ?? null,
+            }
+          : {
+              banner_url: mediaEntry?.source_url ?? null,
+              banner_storage_path: mediaEntry?.storage_path ?? null,
+            };
+
+    const { error } = await this.client
+      .from("studios")
+      .update({
+        ...projectionUpdate,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", studioId);
+    if (error) {
+      throw problem(500, "studio_media_projection_sync_failed", "Studio media update failed.", error.message);
     }
   }
 
@@ -3810,14 +4587,24 @@ export class WorkerAppService {
   private async getDeveloperTitleDetails(userId: string, titleId: string): Promise<DeveloperTitle> {
     const title = await this.requireDeveloperTitleAccess(userId, titleId);
     const studio = await this.getStudioById(title.studio_id);
-    const [mediaRows, showcaseRows, genreSlugs, currentReleaseRow, collectionCountsByTitleId] = await Promise.all([
+    const [mediaRows, catalogMediaEntries, showcaseRows, genreSlugs, currentReleaseRow, collectionCountsByTitleId] = await Promise.all([
       this.getTitleMediaAssetsForTitle(title.id),
+      this.getCatalogMediaEntriesForTitle(title.id),
       this.getTitleShowcaseMediaForTitle(title.id),
       this.getGenreSlugsForMetadataVersion(title.id, title.current_metadata_revision),
       title.current_release_id ? this.requireTitleRelease(title.id, title.current_release_id) : Promise.resolve(null),
       this.getTitleCollectionCounts([title.id]),
     ]);
-    return buildDeveloperTitle(title, studio, mediaRows, showcaseRows, genreSlugs, currentReleaseRow, collectionCountsByTitleId.get(title.id));
+    return buildDeveloperTitle(
+      title,
+      studio,
+      mediaRows,
+      catalogMediaEntries,
+      showcaseRows,
+      genreSlugs,
+      currentReleaseRow,
+      collectionCountsByTitleId.get(title.id)
+    );
   }
 
   private async requireDeveloperTitleAccess(userId: string, titleId: string): Promise<TitleRow> {
@@ -3897,6 +4684,9 @@ export class WorkerAppService {
     if (input.maxPlayers < input.minPlayers) {
       errors.maxPlayers = ["Maximum players must be greater than or equal to minimum players."];
     }
+    if (typeof input.maxPlayersOrMore !== "boolean") {
+      errors.maxPlayersOrMore = ["Choose whether the maximum players value is open-ended."];
+    }
     const ageRatingAuthority = input.ageRatingAuthority?.trim() ?? "";
     const ageRatingValue = input.ageRatingValue?.trim() ?? "";
     if (ageRatingAuthority && !ageRatingValue) {
@@ -3947,8 +4737,13 @@ export class WorkerAppService {
       if (!input.videoUrl?.trim() || !isAbsoluteUrl(input.videoUrl)) {
         errors.videoUrl = ["Video URL must be an absolute URI for external video entries."];
       }
+      if (input.imageUrl?.trim()) {
+        errors.imageUrl = ["External video entries cannot include a direct image URL."];
+      }
     } else if (input.videoUrl?.trim()) {
       errors.videoUrl = ["Screenshot entries cannot include a video URL."];
+    } else if (input.imageUrl?.trim() && !isAbsoluteUrl(input.imageUrl)) {
+      errors.imageUrl = ["Image URL must be an absolute URI for screenshot entries."];
     }
     if (Object.keys(errors).length > 0) {
       throw validationProblem(errors);
@@ -3964,8 +4759,13 @@ export class WorkerAppService {
       if (!input.videoUrl?.trim() || !isAbsoluteUrl(input.videoUrl)) {
         errors.videoUrl = ["Video URL must be an absolute URI for external video entries."];
       }
+      if (input.imageUrl?.trim()) {
+        errors.imageUrl = ["External video entries cannot include a direct image URL."];
+      }
     } else if (input.videoUrl?.trim()) {
       errors.videoUrl = ["Screenshot entries cannot include a video URL."];
+    } else if (input.imageUrl !== undefined && input.imageUrl !== null && input.imageUrl.trim() && !isAbsoluteUrl(input.imageUrl)) {
+      errors.imageUrl = ["Image URL must be an absolute URI for screenshot entries."];
     }
     if (Object.keys(errors).length > 0) {
       throw validationProblem(errors);
@@ -4262,6 +5062,7 @@ export class WorkerAppService {
       normalizedCurrentGenres.every((genreSlug, index) => genreSlug === normalizedNextGenres[index]) &&
       currentVersion.min_players === input.minPlayers &&
       currentVersion.max_players === input.maxPlayers &&
+      currentVersion.max_players_or_more === input.maxPlayersOrMore &&
       currentVersion.age_rating_authority === ageRatingAuthorityCode &&
       currentVersion.age_rating_value === nextAgeRatingValue &&
       currentVersion.min_age_years === input.minAgeYears
@@ -4293,6 +5094,7 @@ export class WorkerAppService {
         genre_display: version.genre_display,
         min_players: version.min_players,
         max_players: version.max_players,
+        max_players_or_more: version.max_players_or_more,
         age_rating_authority: version.age_rating_authority,
         age_rating_value: version.age_rating_value,
         min_age_years: version.min_age_years,
@@ -4304,45 +5106,111 @@ export class WorkerAppService {
     }
   }
 
-  private async getTitleMediaAssetsForTitle(titleId: string): Promise<TitleMediaAssetRow[]> {
-    const { data, error } = await this.client
-      .from("title_media_assets")
-      .select("*")
-      .eq("title_id", titleId)
-      .order("media_role", { ascending: true });
+  private async getCatalogMediaTypeRows(ownerKind?: MediaOwnerKind): Promise<CatalogMediaTypeDefinitionRow[]> {
+    let query = this.client.from("catalog_media_type_definitions").select("*");
+    if (ownerKind) {
+      query = query.eq("owner_kind", ownerKind);
+    }
+    const { data, error } = await query;
     if (error) {
-      throw problem(500, "catalog_media_lookup_failed", "Catalog media lookup failed.", error.message);
+      if (isCatalogMediaTypeDefinitionsUnavailable(error)) {
+        return Object.values(catalogMediaTypeDefinitions)
+          .filter((definition) => !ownerKind || definition.ownerKind === ownerKind)
+          .map((definition) => ({
+            key: definition.key,
+            owner_kind: definition.ownerKind,
+            display_name: definition.displayName,
+            usage_summary: definition.usageSummary,
+            bucket_name: definition.bucket,
+            max_upload_bytes: definition.maxUploadBytes,
+            recommended_width: definition.recommendedWidth,
+            recommended_height: definition.recommendedHeight,
+            accepted_mime_types: [...definition.acceptedMimeTypes],
+            accepted_file_types: [...definition.acceptedFileTypes],
+            aspect_width: definition.aspectWidth,
+            aspect_height: definition.aspectHeight,
+            allows_multiple: definition.allowsMultiple,
+            supports_video: definition.supportsVideo,
+            created_at: "",
+            updated_at: "",
+          }))
+          .sort((left, right) => left.display_name.localeCompare(right.display_name));
+      }
+      throw problem(500, "catalog_media_type_lookup_failed", "Catalog media type lookup failed.", error.message);
     }
 
-    return data as TitleMediaAssetRow[];
+    return (data as CatalogMediaTypeDefinitionRow[]).sort((left, right) => left.display_name.localeCompare(right.display_name));
   }
 
-  private async getTitleShowcaseMediaForTitle(titleId: string): Promise<TitleShowcaseMediaRow[]> {
+  private async getCatalogMediaEntriesForTitle(titleId: string): Promise<CatalogMediaEntryRow[]> {
     const { data, error } = await this.client
-      .from("title_showcase_media")
+      .from("catalog_media_entries")
       .select("*")
       .eq("title_id", titleId)
       .order("display_order", { ascending: true })
       .order("created_at", { ascending: true });
     if (error) {
-      throw problem(500, "title_showcase_media_lookup_failed", "Title showcase media lookup failed.", error.message);
+      if (isCatalogMediaEntriesUnavailable(error)) {
+        return [];
+      }
+      throw problem(500, "catalog_media_lookup_failed", "Catalog media lookup failed.", error.message);
     }
 
-    return data as TitleShowcaseMediaRow[];
+    return data as CatalogMediaEntryRow[];
+  }
+
+  private async getCatalogMediaEntriesForStudio(studioId: string): Promise<CatalogMediaEntryRow[]> {
+    const { data, error } = await this.client
+      .from("catalog_media_entries")
+      .select("*")
+      .eq("studio_id", studioId)
+      .order("display_order", { ascending: true })
+      .order("created_at", { ascending: true });
+    if (error) {
+      if (isCatalogMediaEntriesUnavailable(error)) {
+        return [];
+      }
+      throw problem(500, "catalog_media_lookup_failed", "Catalog media lookup failed.", error.message);
+    }
+
+    return data as CatalogMediaEntryRow[];
+  }
+
+  private async requireCatalogMediaEntry(
+    ownerKind: MediaOwnerKind,
+    ownerId: string,
+    mediaEntryId: string
+  ): Promise<CatalogMediaEntryRow> {
+    const ownerColumn = ownerKind === "studio" ? "studio_id" : "title_id";
+    const { data, error } = await this.client
+      .from("catalog_media_entries")
+      .select("*")
+      .eq("id", mediaEntryId)
+      .eq(ownerColumn, ownerId)
+      .limit(1);
+    if (error) {
+      throw problem(500, "catalog_media_lookup_failed", "Catalog media lookup failed.", error.message);
+    }
+
+    const mediaEntry = (data as CatalogMediaEntryRow[])[0];
+    if (!mediaEntry) {
+      throw problem(404, "catalog_media_not_found", "Catalog media not found.", "The requested media entry was not found.");
+    }
+
+    return mediaEntry;
+  }
+
+  private async getTitleMediaAssetsForTitle(titleId: string): Promise<TitleMediaAssetRow[]> {
+    return buildLegacyTitleMediaAssetsFromEntries(await this.getCatalogMediaEntriesForTitle(titleId));
+  }
+
+  private async getTitleShowcaseMediaForTitle(titleId: string): Promise<TitleShowcaseMediaRow[]> {
+    return buildLegacyTitleShowcaseMediaFromEntries(await this.getCatalogMediaEntriesForTitle(titleId));
   }
 
   private async requireTitleShowcaseMedia(titleId: string, showcaseMediaId: string): Promise<TitleShowcaseMediaRow> {
-    const { data, error } = await this.client
-      .from("title_showcase_media")
-      .select("*")
-      .eq("id", showcaseMediaId)
-      .eq("title_id", titleId)
-      .limit(1);
-    if (error) {
-      throw problem(500, "title_showcase_media_lookup_failed", "Title showcase media lookup failed.", error.message);
-    }
-
-    const showcaseMedia = (data as TitleShowcaseMediaRow[])[0];
+    const mediaEntry = await this.requireCatalogMediaEntry("title", titleId, showcaseMediaId);
+    const showcaseMedia = mapCatalogMediaEntryToLegacyTitleShowcase(mediaEntry);
     if (!showcaseMedia) {
       throw problem(404, "title_showcase_media_not_found", "Title showcase media not found.", "The requested title showcase media was not found.");
     }
@@ -4498,17 +5366,33 @@ export class WorkerAppService {
   }
 
   private async getStudioById(studioId: string): Promise<StudioRow> {
-    const { data, error } = await this.client.from("studios").select("*").eq("id", studioId).limit(1);
-    if (error) {
-      throw problem(500, "studio_lookup_failed", "Studio lookup failed.", error.message);
-    }
-
-    const studio = (data as StudioRow[])[0];
+    const studio = await this.findStudioById(studioId);
     if (!studio) {
       throw problem(404, "studio_not_found", "Studio not found", "The requested studio was not found.");
     }
 
     return studio;
+  }
+
+  private async getStudioByIdentifier(studioIdentifier: string): Promise<StudioRow> {
+    const studio = await this.findStudioById(studioIdentifier) ?? await this.findStudioBySlug(studioIdentifier);
+    if (!studio) {
+      throw problem(404, "studio_not_found", "Studio not found", "The requested studio was not found.");
+    }
+
+    return studio;
+  }
+
+  private async findStudioById(studioId: string): Promise<StudioRow | null> {
+    const { data, error } = await this.client.from("studios").select("*").eq("id", studioId).limit(1);
+    if (error) {
+      if (isInvalidUuidLookupError(error)) {
+        return null;
+      }
+      throw problem(500, "studio_lookup_failed", "Studio lookup failed.", error.message);
+    }
+
+    return (data as StudioRow[])[0] ?? null;
   }
 
   private async findStudioBySlug(slug: string): Promise<StudioRow | null> {
@@ -4579,24 +5463,30 @@ export class WorkerAppService {
     return linksByStudioId;
   }
 
-  private buildStudioSummary(studio: StudioRow, links: StudioLinkRow[], followerCount: number): Studio {
+  private buildStudioSummary(
+    studio: StudioRow,
+    links: StudioLinkRow[],
+    followerCount: number,
+    mediaEntries: CatalogMediaEntryRow[] = []
+  ): Studio {
     return {
       id: studio.id,
       slug: studio.slug,
       displayName: studio.display_name,
       description: studio.description,
-      avatarUrl: studio.avatar_url,
-      logoUrl: studio.logo_url,
-      bannerUrl: studio.banner_url,
+      avatarUrl: resolveStudioMediaUrl(mediaEntries, "studio_avatar", studio.avatar_url),
+      logoUrl: resolveStudioMediaUrl(mediaEntries, "studio_logo", studio.logo_url),
+      bannerUrl: resolveStudioMediaUrl(mediaEntries, "studio_banner", studio.banner_url),
       followerCount,
       links: links.map(mapStudioLink),
+      catalogMediaEntries: mediaEntries.map(mapCatalogMediaEntry),
       createdAt: studio.created_at,
       updatedAt: studio.updated_at
     };
   }
 
-  private buildStudio(studio: StudioRow, links: StudioLinkRow[], followerCount: number): Studio {
-    return this.buildStudioSummary(studio, links, followerCount);
+  private buildStudio(studio: StudioRow, links: StudioLinkRow[], followerCount: number, mediaEntries: CatalogMediaEntryRow[] = []): Studio {
+    return this.buildStudioSummary(studio, links, followerCount, mediaEntries);
   }
 
   private async requireStudioLink(studioId: string, linkId: string): Promise<void> {
@@ -4824,10 +5714,13 @@ export class WorkerAppService {
 
     const titles = await this.getTitlesByIds(titleIds);
     const studios = await this.getStudiosByIds(titles.map((title) => title.studio_id));
-    const mediaByTitleId = await this.getTitleMediaByTitleIds(titleIds);
-    const currentReleaseById = await this.getTitleReleaseRowsByIds(
-      titles.map((title) => title.current_release_id).filter((value): value is string => Boolean(value))
-    );
+    const [mediaByTitleId, catalogMediaByTitleId, currentReleaseById] = await Promise.all([
+      this.getTitleMediaByTitleIds(titleIds),
+      this.getCatalogMediaByTitleIds(titleIds),
+      this.getTitleReleaseRowsByIds(
+        titles.map((title) => title.current_release_id).filter((value): value is string => Boolean(value))
+      ),
+    ]);
     const studioById = new Map(studios.map((studio) => [studio.id, studio]));
     const titleById = new Map(titles.map((title) => [title.id, title]));
 
@@ -4843,7 +5736,13 @@ export class WorkerAppService {
           return null;
         }
 
-        return buildCatalogSummary(title, studio, mediaByTitleId.get(title.id) ?? [], currentReleaseById.get(title.current_release_id ?? ""));
+        return buildCatalogSummary(
+          title,
+          studio,
+          mediaByTitleId.get(title.id) ?? [],
+          catalogMediaByTitleId.get(title.id) ?? [],
+          currentReleaseById.get(title.current_release_id ?? "")
+        );
       })
       .filter((title): title is CatalogTitleSummary => Boolean(title));
   }
@@ -5142,17 +6041,24 @@ export class WorkerAppService {
   }
 
   private async getTitleById(titleId: string): Promise<TitleRow> {
-    const { data, error } = await this.client.from("titles").select("*").eq("id", titleId).limit(1);
-    if (error) {
-      throw problem(500, "catalog_lookup_failed", "Catalog lookup failed.", error.message);
-    }
-
-    const title = (data as TitleRow[])[0];
+    const title = await this.findTitleById(titleId);
     if (!title) {
       throw problem(404, "catalog_title_not_found", "Catalog title not found", "The requested title was not found.");
     }
 
     return title;
+  }
+
+  private async findTitleById(titleId: string): Promise<TitleRow | null> {
+    const { data, error } = await this.client.from("titles").select("*").eq("id", titleId).limit(1);
+    if (error) {
+      if (isInvalidUuidLookupError(error)) {
+        return null;
+      }
+      throw problem(500, "catalog_lookup_failed", "Catalog lookup failed.", error.message);
+    }
+
+    return (data as TitleRow[])[0] ?? null;
   }
 
   private async getTitleByStudioAndSlug(studioId: string, titleSlug: string): Promise<TitleRow> {
@@ -5174,7 +6080,51 @@ export class WorkerAppService {
     return title;
   }
 
+  private async getTitleByStudioAndIdentifier(studioId: string, titleIdentifier: string): Promise<TitleRow> {
+    const titleById = await this.findTitleById(titleIdentifier);
+    if (titleById) {
+      if (titleById.studio_id !== studioId) {
+        throw problem(404, "catalog_title_not_found", "Catalog title not found", "The requested title was not found.");
+      }
+
+      return titleById;
+    }
+
+    return this.getTitleByStudioAndSlug(studioId, titleIdentifier);
+  }
+
   private async getTitleMediaByTitleIds(titleIds: string[]): Promise<Map<string, TitleMediaAssetRow[]>> {
+    const mediaByTitleId = new Map<string, TitleMediaAssetRow[]>();
+    if (titleIds.length === 0) {
+      return mediaByTitleId;
+    }
+
+    const { data, error } = await this.client.from("catalog_media_entries").select("*").in("title_id", titleIds);
+    if (error) {
+      if (isCatalogMediaEntriesUnavailable(error)) {
+        return this.getLegacyTitleMediaByTitleIds(titleIds);
+      }
+      throw problem(500, "catalog_media_lookup_failed", "Catalog media lookup failed.", error.message);
+    }
+
+    const entriesByTitleId = new Map<string, CatalogMediaEntryRow[]>();
+    for (const row of data as CatalogMediaEntryRow[]) {
+      if (!row.title_id) {
+        continue;
+      }
+      const current = entriesByTitleId.get(row.title_id) ?? [];
+      current.push(row);
+      entriesByTitleId.set(row.title_id, current);
+    }
+
+    for (const [titleId, rows] of entriesByTitleId.entries()) {
+      mediaByTitleId.set(titleId, buildLegacyTitleMediaAssetsFromEntries(rows));
+    }
+
+    return mediaByTitleId;
+  }
+
+  private async getLegacyTitleMediaByTitleIds(titleIds: string[]): Promise<Map<string, TitleMediaAssetRow[]>> {
     const mediaByTitleId = new Map<string, TitleMediaAssetRow[]>();
     if (titleIds.length === 0) {
       return mediaByTitleId;
@@ -5192,13 +6142,74 @@ export class WorkerAppService {
     }
 
     for (const rows of mediaByTitleId.values()) {
-      rows.sort((left, right) => left.media_role.localeCompare(right.media_role));
+      rows.sort((left, right) => left.media_role.localeCompare(right.media_role) || left.created_at.localeCompare(right.created_at));
+    }
+
+    return mediaByTitleId;
+  }
+
+  private async getCatalogMediaByTitleIds(titleIds: string[]): Promise<Map<string, CatalogMediaEntryRow[]>> {
+    const mediaByTitleId = new Map<string, CatalogMediaEntryRow[]>();
+    if (titleIds.length === 0) {
+      return mediaByTitleId;
+    }
+
+    const { data, error } = await this.client.from("catalog_media_entries").select("*").in("title_id", titleIds);
+    if (error) {
+      if (isCatalogMediaEntriesUnavailable(error)) {
+        return mediaByTitleId;
+      }
+      throw problem(500, "catalog_media_lookup_failed", "Catalog media lookup failed.", error.message);
+    }
+
+    for (const row of data as CatalogMediaEntryRow[]) {
+      if (!row.title_id) {
+        continue;
+      }
+      const current = mediaByTitleId.get(row.title_id) ?? [];
+      current.push(row);
+      mediaByTitleId.set(row.title_id, current);
+    }
+
+    for (const rows of mediaByTitleId.values()) {
+      rows.sort((left, right) => left.display_order - right.display_order || left.created_at.localeCompare(right.created_at));
     }
 
     return mediaByTitleId;
   }
 
   private async getTitleShowcaseMediaByTitleIds(titleIds: string[]): Promise<Map<string, TitleShowcaseMediaRow[]>> {
+    const showcaseByTitleId = new Map<string, TitleShowcaseMediaRow[]>();
+    if (titleIds.length === 0) {
+      return showcaseByTitleId;
+    }
+
+    const { data, error } = await this.client.from("catalog_media_entries").select("*").in("title_id", titleIds);
+    if (error) {
+      if (isCatalogMediaEntriesUnavailable(error)) {
+        return this.getLegacyTitleShowcaseMediaByTitleIds(titleIds);
+      }
+      throw problem(500, "title_showcase_media_lookup_failed", "Title showcase media lookup failed.", error.message);
+    }
+
+    const entriesByTitleId = new Map<string, CatalogMediaEntryRow[]>();
+    for (const row of data as CatalogMediaEntryRow[]) {
+      if (!row.title_id) {
+        continue;
+      }
+      const current = entriesByTitleId.get(row.title_id) ?? [];
+      current.push(row);
+      entriesByTitleId.set(row.title_id, current);
+    }
+
+    for (const [titleId, rows] of entriesByTitleId.entries()) {
+      showcaseByTitleId.set(titleId, buildLegacyTitleShowcaseMediaFromEntries(rows));
+    }
+
+    return showcaseByTitleId;
+  }
+
+  private async getLegacyTitleShowcaseMediaByTitleIds(titleIds: string[]): Promise<Map<string, TitleShowcaseMediaRow[]>> {
     const showcaseByTitleId = new Map<string, TitleShowcaseMediaRow[]>();
     if (titleIds.length === 0) {
       return showcaseByTitleId;
@@ -5220,6 +6231,36 @@ export class WorkerAppService {
     }
 
     return showcaseByTitleId;
+  }
+
+  private async getStudioMediaByStudioIds(studioIds: string[]): Promise<Map<string, CatalogMediaEntryRow[]>> {
+    const mediaByStudioId = new Map<string, CatalogMediaEntryRow[]>();
+    if (studioIds.length === 0) {
+      return mediaByStudioId;
+    }
+
+    const { data, error } = await this.client.from("catalog_media_entries").select("*").in("studio_id", studioIds);
+    if (error) {
+      if (isCatalogMediaEntriesUnavailable(error)) {
+        return mediaByStudioId;
+      }
+      throw problem(500, "catalog_media_lookup_failed", "Catalog media lookup failed.", error.message);
+    }
+
+    for (const row of data as CatalogMediaEntryRow[]) {
+      if (!row.studio_id) {
+        continue;
+      }
+      const current = mediaByStudioId.get(row.studio_id) ?? [];
+      current.push(row);
+      mediaByStudioId.set(row.studio_id, current);
+    }
+
+    for (const rows of mediaByStudioId.values()) {
+      rows.sort((left, right) => left.display_order - right.display_order || left.created_at.localeCompare(right.created_at));
+    }
+
+    return mediaByStudioId;
   }
 
   private async buildTitleReportSummaries(reports: TitleReportRow[]): Promise<TitleReportSummary[]> {

@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
-import { handleAnalyticsEventRoute, handleMarketingSignupRoute, handleSupportIssueRoute } from "./worker";
+import worker, { handleAnalyticsEventRoute, handleMarketingSignupRoute, handleSupportIssueRoute } from "./worker";
+import { WorkerAppService, type Env } from "./service-boundary";
+
+const minimalEnv: Env = {
+  APP_ENV: "local",
+  SUPABASE_URL: "https://example.supabase.co",
+  SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+  SUPABASE_SECRET_KEY: "secret-key",
+};
 
 describe("handleMarketingSignupRoute", () => {
   it("returns a created marketing signup response", async () => {
@@ -354,5 +362,38 @@ describe("handleAnalyticsEventRoute", () => {
       },
     });
     expect(service.recordAnalyticsEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("worker public identifier routes", () => {
+  it("routes catalog title detail requests with studio and title ids", async () => {
+    const getCatalogTitle = vi.spyOn(WorkerAppService.prototype, "getCatalogTitle").mockResolvedValue({
+      title: {
+        id: "title-1",
+        studioId: "studio-1",
+        studioSlug: "blue-harbor-games",
+        slug: "lantern-drift",
+      },
+    } as never);
+
+    const response = await worker.fetch(new Request("http://example.test/catalog/studio-1/title-1"), minimalEnv);
+
+    expect(response.status).toBe(200);
+    expect(getCatalogTitle).toHaveBeenCalledWith("", "studio-1", "title-1");
+  });
+
+  it("routes public studio detail requests with a studio id", async () => {
+    const getPublicStudio = vi.spyOn(WorkerAppService.prototype, "getPublicStudio").mockResolvedValue({
+      studio: {
+        id: "studio-1",
+        slug: "blue-harbor-games",
+        displayName: "Blue Harbor Games",
+      },
+    } as never);
+
+    const response = await worker.fetch(new Request("http://example.test/studios/studio-1"), minimalEnv);
+
+    expect(response.status).toBe(200);
+    expect(getPublicStudio).toHaveBeenCalledWith("studio-1");
   });
 });

@@ -60,6 +60,45 @@ type PlayerFollowedStudioRow = {
   created_at: string;
 };
 
+type CatalogMediaTypeDefinitionRow = {
+  key: string;
+  owner_kind: "studio" | "title";
+  display_name: string;
+  usage_summary: string;
+  bucket_name: string;
+  max_upload_bytes: number;
+  accepted_mime_types: string[];
+  accepted_file_types: string[];
+  recommended_width: number;
+  recommended_height: number;
+  aspect_width: number;
+  aspect_height: number;
+  allows_multiple: boolean;
+  supports_video: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+type CatalogMediaEntryRow = {
+  id: string;
+  studio_id: string | null;
+  title_id: string | null;
+  media_type_key: string;
+  kind: string;
+  source_url: string | null;
+  storage_path: string | null;
+  preview_image_url: string | null;
+  preview_storage_path: string | null;
+  video_url: string | null;
+  alt_text: string | null;
+  mime_type: string | null;
+  width: number | null;
+  height: number | null;
+  display_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
 const tables: {
   app_users: AppUserRow[];
   app_user_roles: AppUserRoleRow[];
@@ -67,6 +106,8 @@ const tables: {
   studio_memberships: StudioMembershipRow[];
   studio_links: StudioLinkRow[];
   player_followed_studios: PlayerFollowedStudioRow[];
+  catalog_media_type_definitions: CatalogMediaTypeDefinitionRow[];
+  catalog_media_entries: CatalogMediaEntryRow[];
 } = {
   app_users: [],
   app_user_roles: [],
@@ -74,6 +115,8 @@ const tables: {
   studio_memberships: [],
   studio_links: [],
   player_followed_studios: [],
+  catalog_media_type_definitions: [],
+  catalog_media_entries: [],
 };
 
 const storageUploads: Array<{ bucket: string; path: string; contentType: string }> = [];
@@ -119,6 +162,63 @@ function resetTables() {
   tables.studio_memberships = [{ studio_id: "studio-1", user_id: "user-1", role: "owner" }];
   tables.studio_links = [];
   tables.player_followed_studios = [];
+  tables.catalog_media_type_definitions = [
+    {
+      key: "studio_avatar",
+      owner_kind: "studio",
+      display_name: "Studio avatar",
+      usage_summary: "Avatar shown on studio cards and details.",
+      bucket_name: "avatars",
+      max_upload_bytes: 5_000_000,
+      accepted_mime_types: ["image/png", "image/jpeg", "image/webp", "image/svg+xml"],
+      accepted_file_types: ["PNG", "JPG", "WEBP", "SVG"],
+      recommended_width: 512,
+      recommended_height: 512,
+      aspect_width: 1,
+      aspect_height: 1,
+      allows_multiple: false,
+      supports_video: false,
+      created_at: "2026-03-13T00:00:00Z",
+      updated_at: "2026-03-13T00:00:00Z",
+    },
+    {
+      key: "studio_logo",
+      owner_kind: "studio",
+      display_name: "Studio logo",
+      usage_summary: "Logo shown on studio surfaces.",
+      bucket_name: "logo-images",
+      max_upload_bytes: 5_000_000,
+      accepted_mime_types: ["image/png", "image/jpeg", "image/webp", "image/svg+xml"],
+      accepted_file_types: ["PNG", "JPG", "WEBP", "SVG"],
+      recommended_width: 1200,
+      recommended_height: 400,
+      aspect_width: 1,
+      aspect_height: 1,
+      allows_multiple: false,
+      supports_video: false,
+      created_at: "2026-03-13T00:00:00Z",
+      updated_at: "2026-03-13T00:00:00Z",
+    },
+    {
+      key: "studio_banner",
+      owner_kind: "studio",
+      display_name: "Studio banner",
+      usage_summary: "Banner shown on studio details.",
+      bucket_name: "hero-images",
+      max_upload_bytes: 5_000_000,
+      accepted_mime_types: ["image/png", "image/jpeg", "image/webp", "image/svg+xml"],
+      accepted_file_types: ["PNG", "JPG", "WEBP", "SVG"],
+      recommended_width: 1680,
+      recommended_height: 720,
+      aspect_width: 3,
+      aspect_height: 1,
+      allows_multiple: false,
+      supports_video: false,
+      created_at: "2026-03-13T00:00:00Z",
+      updated_at: "2026-03-13T00:00:00Z",
+    },
+  ];
+  tables.catalog_media_entries = [];
   storageUploads.splice(0, storageUploads.length);
 }
 
@@ -127,13 +227,43 @@ function createQueryBuilder(tableName: keyof typeof tables) {
   let inFilter: { column: string; values: unknown[] } | null = null;
   let pendingUpdate: Record<string, unknown> | null = null;
   let pendingSelect: string | null = null;
+  let orderBy: Array<{ column: string; ascending: boolean }> = [];
 
-  const applyFilters = <TRow extends Record<string, unknown>>(rows: TRow[]) =>
-    rows.filter((row) => {
+  const applyFilters = <TRow extends Record<string, unknown>>(rows: TRow[]) => {
+    const filtered = rows.filter((row) => {
       const matchesEq = filters.every((filter) => row[filter.column] === filter.value);
       const matchesIn = inFilter ? inFilter.values.includes(row[inFilter.column]) : true;
       return matchesEq && matchesIn;
     });
+
+    if (orderBy.length === 0) {
+      return filtered;
+    }
+
+    return [...filtered].sort((left, right) => {
+      for (const order of orderBy) {
+        const leftValue = left[order.column];
+        const rightValue = right[order.column];
+
+        if (leftValue === rightValue) {
+          continue;
+        }
+        if (leftValue == null) {
+          return order.ascending ? -1 : 1;
+        }
+        if (rightValue == null) {
+          return order.ascending ? 1 : -1;
+        }
+
+        const comparison = String(leftValue).localeCompare(String(rightValue));
+        if (comparison !== 0) {
+          return order.ascending ? comparison : -comparison;
+        }
+      }
+
+      return 0;
+    });
+  };
 
   const builder = {
     select(columns?: string) {
@@ -152,6 +282,10 @@ function createQueryBuilder(tableName: keyof typeof tables) {
         data: applyFilters(tables[tableName] as Array<Record<string, unknown>>),
         error: null,
       });
+    },
+    order(column: string, options?: { ascending?: boolean }) {
+      orderBy = [...orderBy, { column, ascending: options?.ascending ?? true }];
+      return builder;
     },
     limit(count: number) {
       return Promise.resolve({
@@ -206,9 +340,17 @@ function createQueryBuilder(tableName: keyof typeof tables) {
       return builder;
     },
     delete() {
+      const deleteFilters: Array<{ column: string; value: unknown }> = [];
       return {
         eq(column: string, value: unknown) {
-          const kept = (tables[tableName] as Array<Record<string, unknown>>).filter((row) => row[column] !== value);
+          deleteFilters.push({ column, value });
+          if (deleteFilters.length < 2) {
+            return this;
+          }
+
+          const kept = (tables[tableName] as Array<Record<string, unknown>>).filter((row) =>
+            !deleteFilters.every((filter) => row[filter.column] === filter.value),
+          );
           tables[tableName].splice(0, tables[tableName].length, ...(kept as never[]));
           return Promise.resolve({ error: null });
         },
@@ -267,7 +409,7 @@ describe("WorkerAppService studio avatar support", () => {
     vi.clearAllMocks();
   });
 
-  it("persists avatar URLs when creating and updating studios", async () => {
+  it("creates and updates studios without mutating legacy media columns directly", async () => {
     const service = new WorkerAppService({
       APP_ENV: "staging",
       SUPABASE_URL: "https://example.supabase.co",
@@ -283,24 +425,57 @@ describe("WorkerAppService studio avatar support", () => {
       slug: "signal-harbor-studio",
       displayName: "Signal Harbor Studio",
       description: "A coastal co-op studio profile.",
-      avatarUrl: "https://example.com/avatar.png",
-      logoUrl: null,
-      bannerUrl: null,
     });
 
-    expect(created.studio.avatarUrl).toBe("https://example.com/avatar.png");
+    expect(created.studio.avatarUrl ?? null).toBeNull();
+    const createdStudioRow = tables.studios.find((studio) => studio.id === created.studio.id);
+    expect(createdStudioRow?.avatar_url ?? null).toBeNull();
+    expect(createdStudioRow?.logo_url ?? null).toBeNull();
+    expect(createdStudioRow?.banner_url ?? null).toBeNull();
 
     const updated = await service.updateStudio("developer-token", "studio-1", {
       slug: "blue-harbor-games",
       displayName: "Blue Harbor Games",
       description: "Blue Harbor Games profile.",
-      avatarUrl: "https://example.com/updated-avatar.png",
-      logoUrl: "https://example.com/logo.png",
-      bannerUrl: null,
     });
 
-    expect(updated.studio.avatarUrl).toBe("https://example.com/updated-avatar.png");
-    expect(tables.studios.find((studio) => studio.id === "studio-1")?.avatar_url).toBe("https://example.com/updated-avatar.png");
+    expect(updated.studio.logoUrl).toBe("https://cdn.example/logo.png");
+    expect(tables.studios.find((studio) => studio.id === "studio-1")).toMatchObject({
+      avatar_url: null,
+      logo_url: "https://cdn.example/logo.png",
+      banner_url: null,
+    });
+  });
+
+  it("projects studio catalog media into the legacy studio media columns for compatibility", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+      SUPABASE_AVATARS_BUCKET: "avatars",
+      SUPABASE_CARD_IMAGES_BUCKET: "card-images",
+      SUPABASE_HERO_IMAGES_BUCKET: "hero-images",
+      SUPABASE_LOGO_IMAGES_BUCKET: "logo-images",
+    });
+
+    const created = await service.createStudioCatalogMedia("developer-token", "studio-1", {
+      mediaTypeKey: "studio_avatar",
+      kind: "image",
+      sourceUrl: "https://example.com/avatar.png",
+      altText: null,
+      mimeType: null,
+      width: null,
+      height: null,
+      displayOrder: 0,
+    });
+
+    expect(created.mediaEntry.sourceUrl).toBe("https://example.com/avatar.png");
+    expect(tables.studios.find((studio) => studio.id === "studio-1")?.avatar_url).toBe("https://example.com/avatar.png");
+
+    await service.deleteStudioCatalogMedia("developer-token", "studio-1", created.mediaEntry.id);
+
+    expect(tables.studios.find((studio) => studio.id === "studio-1")?.avatar_url).toBeNull();
   });
 
   it("uploads studio avatar files into storage and updates the studio projection", async () => {

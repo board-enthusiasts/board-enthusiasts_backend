@@ -140,7 +140,11 @@ export function buildStableSeedUuid(seed: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
 }
 
-function buildPlayerCountDisplay(minPlayers: number, maxPlayers: number): string {
+function buildPlayerCountDisplay(minPlayers: number, maxPlayers: number, maxPlayersOrMore: boolean): string {
+  if (maxPlayersOrMore) {
+    return minPlayers === maxPlayers ? `${maxPlayers}+ players` : `${minPlayers}-${maxPlayers}+ players`;
+  }
+
   return minPlayers === maxPlayers ? `${minPlayers} player${minPlayers === 1 ? "" : "s"}` : `${minPlayers}-${maxPlayers} players`;
 }
 
@@ -620,6 +624,7 @@ async function seedOnce(options: SeedOptions): Promise<void> {
       genre_display: title.genreDisplay,
       min_players: title.minPlayers,
       max_players: title.maxPlayers,
+      max_players_or_more: title.maxPlayersOrMore,
       age_rating_authority: title.ageRatingAuthority,
       age_rating_value: title.ageRatingValue,
       min_age_years: title.minAgeYears,
@@ -731,6 +736,7 @@ async function seedOnce(options: SeedOptions): Promise<void> {
         genre_display: title.genreDisplay,
         min_players: title.minPlayers,
         max_players: title.maxPlayers,
+        max_players_or_more: title.maxPlayersOrMore,
         age_rating_authority: title.ageRatingAuthority,
         age_rating_value: title.ageRatingValue,
         min_age_years: title.minAgeYears

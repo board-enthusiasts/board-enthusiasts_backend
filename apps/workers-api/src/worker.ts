@@ -262,9 +262,9 @@ export default {
         return json(await service.listPublicStudios(), { headers: responseHeaders });
       }
 
-      const studioSlugMatch = url.pathname.match(/^\/studios\/([^/]+)$/);
-      if (request.method === "GET" && studioSlugMatch) {
-        return json(await service.getPublicStudio(studioSlugMatch[1]!), { headers: responseHeaders });
+      const studioIdentifierMatch = url.pathname.match(/^\/studios\/([^/]+)$/);
+      if (request.method === "GET" && studioIdentifierMatch) {
+        return json(await service.getPublicStudio(studioIdentifierMatch[1]!), { headers: responseHeaders });
       }
 
       if (request.method === "GET" && url.pathname === "/identity/user-name-availability") {
@@ -433,6 +433,10 @@ export default {
         return json(await service.listManagedStudios(token), { headers: responseHeaders });
       }
 
+      if (request.method === "GET" && url.pathname === "/developer/media-types") {
+        return json(await service.listCatalogMediaTypes(token), { headers: responseHeaders });
+      }
+
       if (request.method === "POST" && url.pathname === "/studios") {
         return json(await service.createStudio(token, await readJson(request)), { status: 201, headers: responseHeaders });
       }
@@ -482,6 +486,44 @@ export default {
       if (studioBannerMatch && request.method === "POST") {
         const formData = await request.formData();
         return json(await service.uploadStudioMedia(token, studioBannerMatch[1]!, "banner", formData.get("media") as File | null), { headers: responseHeaders });
+      }
+
+      const studioCatalogMediaListMatch = url.pathname.match(/^\/developer\/studios\/([^/]+)\/catalog-media$/);
+      if (studioCatalogMediaListMatch && request.method === "GET") {
+        return json(await service.listStudioCatalogMedia(token, studioCatalogMediaListMatch[1]!), { headers: responseHeaders });
+      }
+
+      if (studioCatalogMediaListMatch && request.method === "POST") {
+        return json(await service.createStudioCatalogMedia(token, studioCatalogMediaListMatch[1]!, await readJson(request)), {
+          status: 201,
+          headers: responseHeaders
+        });
+      }
+
+      const studioCatalogMediaMatch = url.pathname.match(/^\/developer\/studios\/([^/]+)\/catalog-media\/([^/]+)$/);
+      if (studioCatalogMediaMatch && request.method === "PUT") {
+        return json(await service.updateStudioCatalogMedia(token, studioCatalogMediaMatch[1]!, studioCatalogMediaMatch[2]!, await readJson(request)), {
+          headers: responseHeaders
+        });
+      }
+
+      if (studioCatalogMediaMatch && request.method === "DELETE") {
+        await service.deleteStudioCatalogMedia(token, studioCatalogMediaMatch[1]!, studioCatalogMediaMatch[2]!);
+        return new Response(null, { status: 204, headers: responseHeaders });
+      }
+
+      const studioCatalogMediaUploadMatch = url.pathname.match(/^\/developer\/studios\/([^/]+)\/catalog-media\/([^/]+)\/upload$/);
+      if (studioCatalogMediaUploadMatch && request.method === "POST") {
+        const formData = await request.formData();
+        return json(
+          await service.uploadStudioCatalogMediaImage(
+            token,
+            studioCatalogMediaUploadMatch[1]!,
+            studioCatalogMediaUploadMatch[2]!,
+            formData.get("media") as File | null
+          ),
+          { headers: responseHeaders }
+        );
       }
 
       const studioTitlesMatch = url.pathname.match(/^\/developer\/studios\/([^/]+)\/titles$/);
@@ -541,6 +583,51 @@ export default {
       const developerTitleMediaListMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/media$/);
       if (developerTitleMediaListMatch && request.method === "GET") {
         return json(await service.getTitleMediaAssets(token, developerTitleMediaListMatch[1]!), { headers: responseHeaders });
+      }
+
+      const developerTitleCatalogMediaListMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/catalog-media$/);
+      if (developerTitleCatalogMediaListMatch && request.method === "GET") {
+        return json(await service.listTitleCatalogMedia(token, developerTitleCatalogMediaListMatch[1]!), { headers: responseHeaders });
+      }
+
+      if (developerTitleCatalogMediaListMatch && request.method === "POST") {
+        return json(await service.createTitleCatalogMedia(token, developerTitleCatalogMediaListMatch[1]!, await readJson(request)), {
+          status: 201,
+          headers: responseHeaders
+        });
+      }
+
+      const developerTitleCatalogMediaMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/catalog-media\/([^/]+)$/);
+      if (developerTitleCatalogMediaMatch && request.method === "PUT") {
+        return json(
+          await service.updateTitleCatalogMedia(
+            token,
+            developerTitleCatalogMediaMatch[1]!,
+            developerTitleCatalogMediaMatch[2]!,
+            await readJson(request)
+          ),
+          { headers: responseHeaders }
+        );
+      }
+
+      if (developerTitleCatalogMediaMatch && request.method === "DELETE") {
+        await service.deleteTitleCatalogMedia(token, developerTitleCatalogMediaMatch[1]!, developerTitleCatalogMediaMatch[2]!);
+        return new Response(null, { status: 204, headers: responseHeaders });
+      }
+
+      const developerTitleCatalogMediaUploadMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/catalog-media\/([^/]+)\/upload$/);
+      if (developerTitleCatalogMediaUploadMatch && request.method === "POST") {
+        const formData = await request.formData();
+        return json(
+          await service.uploadTitleCatalogMediaImage(
+            token,
+            developerTitleCatalogMediaUploadMatch[1]!,
+            developerTitleCatalogMediaUploadMatch[2]!,
+            formData.get("media") as File | null,
+            (formData.get("altText") as string | null) ?? null
+          ),
+          { headers: responseHeaders }
+        );
       }
 
       const developerTitleMediaMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/media\/([^/]+)$/);
