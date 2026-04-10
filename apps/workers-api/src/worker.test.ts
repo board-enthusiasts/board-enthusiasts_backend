@@ -216,6 +216,51 @@ describe("handleSupportIssueRoute", () => {
     );
   });
 
+  it("accepts a BE Home support request", async () => {
+    const service = {
+      getContext: vi.fn().mockReturnValue({
+        allowedWebOrigins: ["https://boardenthusiasts.com"],
+        deploySmokeSecret: null,
+      }),
+      reportSupportIssue: vi.fn().mockResolvedValue({
+        accepted: true,
+      }),
+    };
+
+    const response = await handleSupportIssueRoute(
+      new Request("http://example.test/support/issues", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "https://boardenthusiasts.com" },
+        body: JSON.stringify({
+          category: "be_home_contact",
+          firstName: "Taylor",
+          email: "taylor@example.com",
+          subject: "Support needed",
+          description: "The BE Home browser keeps timing out while I am trying to use Contact Us on Board.",
+          marketingConsentGranted: true,
+          marketingConsentTextVersion: "be-home-support-v1",
+          pageUrl: "https://boardenthusiasts.com/support",
+          apiBaseUrl: "https://api.boardenthusiasts.com",
+          occurredAt: "2026-04-09T22:30:00Z",
+          userAgent: "Vitest Browser",
+        }),
+      }),
+      service as never,
+      {},
+    );
+
+    expect(response.status).toBe(202);
+    expect(service.reportSupportIssue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: "be_home_contact",
+        firstName: "Taylor",
+        email: "taylor@example.com",
+        subject: "Support needed",
+      }),
+      { isDeploySmoke: false },
+    );
+  });
+
   it("marks support issue reports as deploy smoke when the shared secret is present", async () => {
     const service = {
       getContext: vi.fn().mockReturnValue({

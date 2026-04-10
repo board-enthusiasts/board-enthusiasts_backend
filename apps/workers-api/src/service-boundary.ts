@@ -1251,13 +1251,17 @@ export interface WorkerAppContext {
 }
 
 interface SupportIssueReportRequest {
-  category: "email_signup";
+  category: "email_signup" | "be_home_contact";
   firstName?: string | null;
   email?: string | null;
+  subject?: string | null;
+  description?: string | null;
+  marketingConsentGranted?: boolean;
+  marketingConsentTextVersion?: string | null;
   pageUrl: string;
   apiBaseUrl: string;
   occurredAt: string;
-  errorMessage: string;
+  errorMessage?: string | null;
   technicalDetails?: string | null;
   userAgent?: string | null;
   language?: string | null;
@@ -1617,19 +1621,55 @@ export class WorkerAppService {
   }
 
   async reportSupportIssue(input: SupportIssueReportRequest, options: ReportSupportIssueOptions = {}): Promise<{ accepted: true }> {
-    if (input.category !== "email_signup") {
+    if (input.category !== "email_signup" && input.category !== "be_home_contact") {
       throw validationProblem({
-        category: ["Category must be 'email_signup'."]
+        category: ["Category must be 'email_signup' or 'be_home_contact'."]
       });
     }
 
+    const isBeHomeContact = input.category === "be_home_contact";
     const firstName = trimNullableString(input.firstName, 100);
     const email = trimNullableString(input.email, 320);
     const normalizedEmail = email ? normalizeEmailAddress(email) : null;
+    const subject = trimNullableString(input.subject, 200);
+    const description = trimNullableString(input.description, 4000);
+    const marketingConsentGranted = input.marketingConsentGranted === true;
+    const marketingConsentTextVersion = trimNullableString(input.marketingConsentTextVersion, 64);
+    const effectiveReplyToEmail = normalizedEmail ?? (isBeHomeContact ? "support+be-home@boardenthusiasts.com" : null);
 
     if (normalizedEmail && !isValidEmailAddress(normalizedEmail)) {
       throw validationProblem({
         email: ["Enter a valid email address when supplied."]
+      });
+    }
+
+    if (isBeHomeContact && !firstName) {
+      throw validationProblem({
+        firstName: ["First name is required."]
+      });
+    }
+
+    if (isBeHomeContact && !subject) {
+      throw validationProblem({
+        subject: ["Subject is required."]
+      });
+    }
+
+    if (isBeHomeContact && !description) {
+      throw validationProblem({
+        description: ["Description is required."]
+      });
+    }
+
+    if (marketingConsentGranted && !normalizedEmail) {
+      throw validationProblem({
+        email: ["Enter a valid email address to receive marketing updates."]
+      });
+    }
+
+    if (marketingConsentGranted && !marketingConsentTextVersion) {
+      throw validationProblem({
+        marketingConsentTextVersion: ["Consent text version is required when marketing consent is granted."]
       });
     }
 
@@ -1638,42 +1678,80 @@ export class WorkerAppService {
     const occurredAt = trimNullableString(input.occurredAt, 100);
     const errorMessage = trimNullableString(input.errorMessage, 2000);
     const technicalDetails = trimNullableString(input.technicalDetails, 4000);
-    if (!pageUrl || !apiBaseUrl || !occurredAt || !errorMessage) {
+    if (!pageUrl || !apiBaseUrl || !occurredAt || (!isBeHomeContact && !errorMessage)) {
       throw validationProblem({
         body: ["Support issue reports require pageUrl, apiBaseUrl, occurredAt, and errorMessage."]
       });
     }
 
-    const lines = [
-      "Board Enthusiasts landing-page issue report",
-      "",
-      `Smoke test: ${options.isDeploySmoke ? "yes" : "no"}`,
-      `Category: ${input.category}`,
-      `Occurred at: ${occurredAt}`,
-      `Page URL: ${pageUrl}`,
-      `API base URL: ${apiBaseUrl}`,
-      `First name: ${firstName ?? "(not provided)"}`,
-      `Email: ${normalizedEmail ?? "(not provided)"}`,
-      `Error: ${errorMessage}`,
-      `User agent: ${trimNullableString(input.userAgent, 1000) ?? "(not provided)"}`,
-      `Language: ${trimNullableString(input.language, 40) ?? "(not provided)"}`,
-      `Time zone: ${trimNullableString(input.timeZone, 100) ?? "(not provided)"}`,
-      `Viewport: ${input.viewportWidth ?? "?"}x${input.viewportHeight ?? "?"}`,
-      `Screen: ${input.screenWidth ?? "?"}x${input.screenHeight ?? "?"}`,
-      `Environment: ${this.context.envName}`,
-      `Technical details: ${technicalDetails ?? "(not provided)"}`,
-    ];
+    const lines = isBeHomeContact
+      ? [
+          "Board Enthusiasts BE Home support request",
+          "",
+          `Smoke test: ${options.isDeploySmoke ? "yes" : "no"}`,
+          `Category: ${input.category}`,
+          `Occurred at: ${occurredAt}`,
+          `Page URL: ${pageUrl}`,
+          `API base URL: ${apiBaseUrl}`,
+          `First name: ${firstName ?? "(not provided)"}`,
+          `Email: ${effectiveReplyToEmail ?? "(not provided)"}`,
+          `User agent: ${trimNullableString(input.userAgent, 1000) ?? "(not provided)"}`,
+          `Language: ${trimNullableString(input.language, 40) ?? "(not provided)"}`,
+          `Time zone: ${trimNullableString(input.timeZone, 100) ?? "(not provided)"}`,
+          `Viewport: ${input.viewportWidth ?? "?"}x${input.viewportHeight ?? "?"}`,
+          `Screen: ${input.screenWidth ?? "?"}x${input.screenHeight ?? "?"}`,
+          `Environment: ${this.context.envName}`,
+          marketingConsentGranted ? `Marketing consent: granted (${marketingConsentTextVersion})` : "Marketing consent: not granted",
+          "",
+          "Description:",
+          description ?? "(not provided)",
+        ]
+      : [
+          "Board Enthusiasts landing-page issue report",
+          "",
+          `Smoke test: ${options.isDeploySmoke ? "yes" : "no"}`,
+          `Category: ${input.category}`,
+          `Occurred at: ${occurredAt}`,
+          `Page URL: ${pageUrl}`,
+          `API base URL: ${apiBaseUrl}`,
+          `First name: ${firstName ?? "(not provided)"}`,
+          `Email: ${normalizedEmail ?? "(not provided)"}`,
+          `Error: ${errorMessage}`,
+          `User agent: ${trimNullableString(input.userAgent, 1000) ?? "(not provided)"}`,
+          `Language: ${trimNullableString(input.language, 40) ?? "(not provided)"}`,
+          `Time zone: ${trimNullableString(input.timeZone, 100) ?? "(not provided)"}`,
+          `Viewport: ${input.viewportWidth ?? "?"}x${input.viewportHeight ?? "?"}`,
+          `Screen: ${input.screenWidth ?? "?"}x${input.screenHeight ?? "?"}`,
+          `Environment: ${this.context.envName}`,
+          `Technical details: ${technicalDetails ?? "(not provided)"}`,
+        ];
 
     if (options.isDeploySmoke && this.context.envName === "staging") {
       return { accepted: true };
     }
 
     await this.sendSupportIssueEmail({
-      subject: options.isDeploySmoke ? "[Smoke Test] Email signup issue" : "[Bug Report] Email signup issue",
+      subject: isBeHomeContact
+        ? `${options.isDeploySmoke ? "[Smoke Test] " : ""}[BE Home Support Request] ${subject}`
+        : options.isDeploySmoke ? "[Smoke Test] Email signup issue" : "[Bug Report] Email signup issue",
       text: lines.join("\n"),
-      replyToEmail: normalizedEmail,
+      replyToEmail: effectiveReplyToEmail,
       replyToName: firstName,
     });
+
+    if (isBeHomeContact && marketingConsentGranted && normalizedEmail && marketingConsentTextVersion) {
+      await this.createMarketingSignup(
+        {
+          email: normalizedEmail,
+          firstName,
+          source: "be_home_support",
+          consentTextVersion: marketingConsentTextVersion,
+          turnstileToken: null,
+          roleInterests: [],
+        },
+        { bypassTurnstile: true },
+      );
+    }
 
     return { accepted: true };
   }

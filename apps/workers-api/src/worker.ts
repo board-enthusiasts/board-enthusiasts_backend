@@ -10,13 +10,17 @@ const localMarketingOrigins = [
 ];
 
 interface SupportIssueReportRequest {
-  category: "email_signup";
+  category: "email_signup" | "be_home_contact";
   firstName?: string | null;
   email?: string | null;
+  subject?: string | null;
+  description?: string | null;
+  marketingConsentGranted?: boolean;
+  marketingConsentTextVersion?: string | null;
   pageUrl: string;
   apiBaseUrl: string;
   occurredAt: string;
-  errorMessage: string;
+  errorMessage?: string | null;
   technicalDetails?: string | null;
   userAgent?: string | null;
   language?: string | null;

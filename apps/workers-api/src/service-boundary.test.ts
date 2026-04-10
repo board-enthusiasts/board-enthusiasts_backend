@@ -613,6 +613,145 @@ describe("WorkerAppService.createMarketingSignup", () => {
   });
 });
 
+describe("WorkerAppService.reportSupportIssue", () => {
+  it("accepts a BE Home support request and forwards the user's reply-to email", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 202,
+      text: async () => "",
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+      BREVO_API_KEY: "brevo-api-key",
+      BREVO_SIGNUPS_LIST_ID: "12",
+      SUPPORT_REPORT_RECIPIENT: "support@boardenthusiasts.com",
+      SUPPORT_REPORT_SENDER_EMAIL: "noreply@boardenthusiasts.com",
+      SUPPORT_REPORT_SENDER_NAME: "Board Enthusiasts",
+    });
+
+    await expect(
+      service.reportSupportIssue({
+        category: "be_home_contact",
+        firstName: "Taylor",
+        email: "taylor@example.com",
+        subject: "Need help with BE Home",
+        description: "The Contact Us button is not doing anything on my Board device.",
+        marketingConsentGranted: true,
+        marketingConsentTextVersion: "be-home-support-v1",
+        pageUrl: "https://boardenthusiasts.com/support",
+        apiBaseUrl: "https://api.boardenthusiasts.com",
+        occurredAt: "2026-04-09T22:30:00Z",
+        userAgent: "Vitest Browser",
+        language: "en-US",
+        timeZone: "America/Chicago",
+        viewportWidth: 1280,
+        viewportHeight: 720,
+        screenWidth: 1280,
+        screenHeight: 720,
+      }),
+    ).resolves.toEqual({ accepted: true });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "https://api.brevo.com/v3/smtp/email",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining("\"subject\":\"[BE Home Support Request] Need help with BE Home\""),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://api.brevo.com/v3/contacts",
+      expect.objectContaining({
+        method: "POST",
+      }),
+    );
+  });
+
+  it("uses the anonymous BE Home fallback address when no email is supplied", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 202,
+      text: async () => "",
+      json: async () => ({}),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+      BREVO_API_KEY: "brevo-api-key",
+      BREVO_SIGNUPS_LIST_ID: "12",
+      SUPPORT_REPORT_RECIPIENT: "support@boardenthusiasts.com",
+      SUPPORT_REPORT_SENDER_EMAIL: "noreply@boardenthusiasts.com",
+      SUPPORT_REPORT_SENDER_NAME: "Board Enthusiasts",
+    });
+
+    await expect(
+      service.reportSupportIssue({
+        category: "be_home_contact",
+        firstName: "Anonymous",
+        email: null,
+        subject: "Anonymous Board feedback",
+        description: "I wanted to stay anonymous but still send a support note from Board.",
+        pageUrl: "https://boardenthusiasts.com/support",
+        apiBaseUrl: "https://api.boardenthusiasts.com",
+        occurredAt: "2026-04-09T22:30:00Z",
+      }),
+    ).resolves.toEqual({ accepted: true });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.brevo.com/v3/smtp/email",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining("support+be-home@boardenthusiasts.com"),
+      }),
+    );
+  });
+
+  it("requires a consent text version when a BE Home support request opts into marketing", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+      SUPPORT_REPORT_RECIPIENT: "support@boardenthusiasts.com",
+      SUPPORT_REPORT_SENDER_EMAIL: "noreply@boardenthusiasts.com",
+      SUPPORT_REPORT_SENDER_NAME: "Board Enthusiasts",
+    });
+
+    await expect(
+      service.reportSupportIssue({
+        category: "be_home_contact",
+        firstName: "Taylor",
+        email: "taylor@example.com",
+        subject: "Need help",
+        description: "Please help.",
+        marketingConsentGranted: true,
+        pageUrl: "https://boardenthusiasts.com/support",
+        apiBaseUrl: "https://api.boardenthusiasts.com",
+        occurredAt: "2026-04-09T22:30:00Z",
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      payload: {
+        errors: {
+          marketingConsentTextVersion: ["Consent text version is required when marketing consent is granted."],
+        },
+      },
+    });
+  });
+});
+
 describe("WorkerAppService.getCurrentUserResponse", () => {
   beforeEach(() => {
     resetTables();
