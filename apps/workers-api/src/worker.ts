@@ -183,6 +183,16 @@ function readCfCountryCode(request: Request): string | null {
   return typeof country === "string" ? country : null;
 }
 
+function readCfClientIp(request: Request): string | null {
+  const directIp = request.headers.get("cf-connecting-ip")?.trim();
+  if (directIp) {
+    return directIp;
+  }
+
+  const forwardedFor = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
+  return forwardedFor || null;
+}
+
 export async function handleBeHomePresenceRoute(
   request: Request,
   service: Pick<WorkerAppService, "upsertBeHomePresenceSession">,
@@ -207,6 +217,7 @@ export async function handleBeWebsitePresenceRoute(
   return json(
     await service.upsertBeWebsitePresenceSession(await readJson<BeWebsitePresenceRequest>(request), {
       countryCode: readCfCountryCode(request),
+      ipAddress: readCfClientIp(request),
     }),
     {
       status: 202,

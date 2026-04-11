@@ -1701,7 +1701,7 @@ export class WorkerAppService {
 
   async upsertBeWebsitePresenceSession(
     input: BeWebsitePresenceRequest,
-    options: { countryCode?: string | null } = {},
+    options: { countryCode?: string | null; ipAddress?: string | null } = {},
   ): Promise<{
     accepted: true;
     session: {
@@ -1717,6 +1717,7 @@ export class WorkerAppService {
     const pagePath = normalizeAnalyticsPath(input.pagePath);
     const appEnvironment = normalizeBeHomeText(input.appEnvironment, 80);
     const countryCode = normalizeBeHomeCountryCode(options.countryCode);
+    const ipAddress = normalizeBeHomeText(options.ipAddress, 120);
 
     if (!sessionId) {
       throw validationProblem({
@@ -1725,16 +1726,17 @@ export class WorkerAppService {
     }
 
     const now = new Date().toISOString();
-    const syntheticDeviceId = `be-website:${sessionId}`;
-    const deviceIdHash = await hashBeHomeDeviceId(syntheticDeviceId, this.context.supabaseSecretKey);
+    const browserIdentity = ipAddress ? `be-website-ip:${ipAddress}` : `be-website-session:${sessionId}`;
+    const deviceIdHash = await hashBeHomeDeviceId(browserIdentity, this.context.supabaseSecretKey);
     const existingSession = await this.getBeHomePresenceSession(sessionId);
+    const deviceIdSource = ipAddress ? "website_ip" : "website_session";
 
     await this.upsertBeHomeDeviceIdentity({
       deviceIdHash,
       observedAt: now,
       countryCode,
       clientVersion: pagePath,
-      deviceIdSource: "website_session",
+      deviceIdSource,
     });
 
     const { error } = await this.client
@@ -1751,7 +1753,7 @@ export class WorkerAppService {
           country_code: countryCode,
           client_version: pagePath,
           app_environment: appEnvironment,
-          device_id_source: "website_session",
+          device_id_source: deviceIdSource,
         },
         { onConflict: "session_id" },
       );
@@ -1837,14 +1839,25 @@ export class WorkerAppService {
       !session.ended_at &&
       Date.parse(session.last_seen_at) >= beWebsiteThresholdTime,
     );
-    const boardDeviceIdentities = deviceIdentities.filter((deviceIdentity) => deviceIdentity.last_device_id_source !== "website_session");
+    const activeWebsiteIdentities = new Map<string, "anonymous" | "signed_in">();
+    for (const session of activeWebsiteSessions) {
+      const current = activeWebsiteIdentities.get(session.device_id_hash);
+      if (current === "signed_in" || session.auth_state === "signed_in") {
+        activeWebsiteIdentities.set(session.device_id_hash, "signed_in");
+      } else {
+        activeWebsiteIdentities.set(session.device_id_hash, "anonymous");
+      }
+    }
+    const boardDeviceIdentities = deviceIdentities.filter((deviceIdentity) =>
+      !["website_ip", "website_session"].includes(deviceIdentity.last_device_id_source ?? ""),
+    );
     const dailyActiveDevices = boardDeviceIdentities.filter((deviceIdentity) => Date.parse(deviceIdentity.last_seen_at) >= dailyThresholdTime).length;
     const weeklyActiveDevices = boardDeviceIdentities.filter((deviceIdentity) => Date.parse(deviceIdentity.last_seen_at) >= weeklyThresholdTime).length;
     const monthlyActiveDevices = boardDeviceIdentities.filter((deviceIdentity) => Date.parse(deviceIdentity.last_seen_at) >= monthlyThresholdTime).length;
     const activeNowAnonymous = activeBeHomeSessions.filter((session) => session.auth_state === "anonymous").length;
     const activeNowSignedIn = activeBeHomeSessions.filter((session) => session.auth_state === "signed_in").length;
-    const websiteActiveNowAnonymous = activeWebsiteSessions.filter((session) => session.auth_state === "anonymous").length;
-    const websiteActiveNowSignedIn = activeWebsiteSessions.filter((session) => session.auth_state === "signed_in").length;
+    const websiteActiveNowAnonymous = Array.from(activeWebsiteIdentities.values()).filter((authState) => authState === "anonymous").length;
+    const websiteActiveNowSignedIn = Array.from(activeWebsiteIdentities.values()).filter((authState) => authState === "signed_in").length;
     // These identity-based aggregates are directional BE Home estimates while ANDROID_ID remains the primary stable source.
     // They should not be interpreted as authoritative Board hardware totals.
 
@@ -1853,10 +1866,10 @@ export class WorkerAppService {
         activeNowTotal: activeBeHomeSessions.length,
         activeNowAnonymous,
         activeNowSignedIn,
-        websiteActiveNowTotal: activeWebsiteSessions.length,
+        websiteActiveNowTotal: activeWebsiteIdentities.size,
         websiteActiveNowAnonymous,
         websiteActiveNowSignedIn,
-        communityActiveNowTotal: activeBeHomeSessions.length + activeWebsiteSessions.length,
+        communityActiveNowTotal: activeBeHomeSessions.length + activeWebsiteIdentities.size,
         totalBoardsSeen: boardDeviceIdentities.length,
         dailyActiveDevices,
         weeklyActiveDevices,

@@ -2771,7 +2771,7 @@ describe("WorkerAppService BE Home presence", () => {
     });
   });
 
-  it("tracks BE website presence separately and excludes website sessions from Board device totals", async () => {
+  it("tracks BE website presence separately, collapses multiple tabs by IP, and excludes website identities from Board device totals", async () => {
     const service = new WorkerAppService({
       APP_ENV: "production",
       SUPABASE_URL: "https://example.supabase.co",
@@ -2795,7 +2795,17 @@ describe("WorkerAppService BE Home presence", () => {
         pagePath: "/browse?sort=featured",
         appEnvironment: "production",
       },
-      { countryCode: "US" },
+      { countryCode: "US", ipAddress: "203.0.113.10" },
+    );
+
+    await service.upsertBeWebsitePresenceSession(
+      {
+        sessionId: "website-session-2",
+        authState: "signed_in",
+        pagePath: "/offerings",
+        appEnvironment: "production",
+      },
+      { countryCode: "US", ipAddress: "203.0.113.10" },
     );
 
     expect(websiteResponse).toEqual({
@@ -2808,20 +2818,21 @@ describe("WorkerAppService BE Home presence", () => {
         activeTtlSeconds: 600,
       },
     });
-    expect(tables.be_home_presence_sessions).toHaveLength(2);
+    expect(tables.be_home_presence_sessions).toHaveLength(3);
     expect(tables.be_home_presence_sessions[1]).toMatchObject({
       session_id: "website-session-1",
       auth_state: "anonymous",
       surface: "be_website",
       client_version: "/browse?sort=featured",
-      device_id_source: "website_session",
+      device_id_source: "website_ip",
       ended_at: null,
     });
     expect(tables.be_home_device_identities).toHaveLength(2);
     expect(tables.be_home_device_identities[1]).toMatchObject({
-      last_device_id_source: "website_session",
-      last_client_version: "/browse?sort=featured",
+      last_device_id_source: "website_ip",
+      last_client_version: "/offerings",
     });
+    expect(tables.be_home_presence_sessions[1]!.device_id_hash).toBe(tables.be_home_presence_sessions[2]!.device_id_hash);
 
     await expect(service.getBeHomeMetrics()).resolves.toEqual({
       metrics: {
@@ -2829,8 +2840,8 @@ describe("WorkerAppService BE Home presence", () => {
         activeNowAnonymous: 0,
         activeNowSignedIn: 1,
         websiteActiveNowTotal: 1,
-        websiteActiveNowAnonymous: 1,
-        websiteActiveNowSignedIn: 0,
+        websiteActiveNowAnonymous: 0,
+        websiteActiveNowSignedIn: 1,
         communityActiveNowTotal: 2,
         totalBoardsSeen: 1,
         dailyActiveDevices: 1,

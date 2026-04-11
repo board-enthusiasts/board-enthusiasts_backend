@@ -515,7 +515,7 @@ describe("BE Home internal presence routes", () => {
 
     const request = new Request("http://example.test/internal/be-home/website-presence", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.10" },
       body: JSON.stringify({
         sessionId: "website-session-1",
         authState: "anonymous",
@@ -542,7 +542,7 @@ describe("BE Home internal presence routes", () => {
         pagePath: "/browse",
         appEnvironment: "production",
       },
-      { countryCode: "US" },
+      { countryCode: "US", ipAddress: "203.0.113.10" },
     );
   });
 
@@ -688,7 +688,7 @@ describe("worker public identifier routes", () => {
 
     const request = new Request("http://example.test/internal/be-home/website-presence", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "cf-connecting-ip": "203.0.113.10" },
       body: JSON.stringify({
         sessionId: "website-session-123",
         authState: "anonymous",
@@ -709,7 +709,7 @@ describe("worker public identifier routes", () => {
         authState: "anonymous",
         pagePath: "/browse?sort=featured",
       },
-      { countryCode: "CA" },
+      { countryCode: "CA", ipAddress: "203.0.113.10" },
     );
   });
 });
