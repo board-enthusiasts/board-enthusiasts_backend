@@ -6,6 +6,7 @@ import {
   type AnalyticsEventRequest,
   type BeHomePresenceEndRequest,
   type BeHomePresenceRequest,
+  type BeWebsitePresenceRequest,
   type WorkerAppContext,
 } from "./service-boundary";
 
@@ -198,6 +199,22 @@ export async function handleBeHomePresenceRoute(
   );
 }
 
+export async function handleBeWebsitePresenceRoute(
+  request: Request,
+  service: Pick<WorkerAppService, "upsertBeWebsitePresenceSession">,
+  responseHeaders: HeadersInit,
+): Promise<Response> {
+  return json(
+    await service.upsertBeWebsitePresenceSession(await readJson<BeWebsitePresenceRequest>(request), {
+      countryCode: readCfCountryCode(request),
+    }),
+    {
+      status: 202,
+      headers: responseHeaders,
+    },
+  );
+}
+
 export async function handleBeHomePresenceEndRoute(
   request: Request,
   service: Pick<WorkerAppService, "endBeHomePresenceSession">,
@@ -262,6 +279,10 @@ export default {
 
       if (request.method === "POST" && url.pathname === "/internal/be-home/presence") {
         return handleBeHomePresenceRoute(request, service, responseHeaders);
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/be-home/website-presence") {
+        return handleBeWebsitePresenceRoute(request, service, responseHeaders);
       }
 
       if (request.method === "POST" && url.pathname === "/internal/be-home/presence/end") {

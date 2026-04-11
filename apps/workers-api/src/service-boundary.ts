@@ -456,7 +456,7 @@ type BeHomePresenceSessionRow = {
   session_id: string;
   device_id_hash: string;
   auth_state: "anonymous" | "signed_in";
-  surface: "be_home";
+  surface: "be_home" | "be_website";
   started_at: string;
   last_seen_at: string;
   ended_at: string | null;
@@ -622,6 +622,8 @@ const analyticsEventNames = new Set([
 
 const beHomeHeartbeatIntervalSeconds = 60;
 const beHomeActiveTtlSeconds = 180;
+const beWebsiteHeartbeatIntervalSeconds = 30;
+const beWebsiteActiveTtlSeconds = 600;
 
 function normalizeAnalyticsString(value: string | null | undefined, maxLength: number): string | null {
   const trimmed = value?.trim() ?? "";
@@ -1363,6 +1365,13 @@ export interface BeHomePresenceRequest {
   appEnvironment?: string | null;
 }
 
+export interface BeWebsitePresenceRequest {
+  sessionId: string;
+  authState?: "anonymous" | "signed_in" | null;
+  pagePath?: string | null;
+  appEnvironment?: string | null;
+}
+
 export interface BeHomePresenceEndRequest {
   sessionId: string;
 }
@@ -1690,6 +1699,78 @@ export class WorkerAppService {
     };
   }
 
+  async upsertBeWebsitePresenceSession(
+    input: BeWebsitePresenceRequest,
+    options: { countryCode?: string | null } = {},
+  ): Promise<{
+    accepted: true;
+    session: {
+      sessionId: string;
+      authState: "anonymous" | "signed_in";
+      lastSeenAt: string;
+      heartbeatIntervalSeconds: number;
+      activeTtlSeconds: number;
+    };
+  }> {
+    const sessionId = normalizeBeHomeText(input.sessionId, 120);
+    const authState = normalizeBeHomeAuthState(input.authState);
+    const pagePath = normalizeAnalyticsPath(input.pagePath);
+    const appEnvironment = normalizeBeHomeText(input.appEnvironment, 80);
+    const countryCode = normalizeBeHomeCountryCode(options.countryCode);
+
+    if (!sessionId) {
+      throw validationProblem({
+        sessionId: ["Session id is required."],
+      });
+    }
+
+    const now = new Date().toISOString();
+    const syntheticDeviceId = `be-website:${sessionId}`;
+    const deviceIdHash = await hashBeHomeDeviceId(syntheticDeviceId, this.context.supabaseSecretKey);
+    const existingSession = await this.getBeHomePresenceSession(sessionId);
+
+    await this.upsertBeHomeDeviceIdentity({
+      deviceIdHash,
+      observedAt: now,
+      countryCode,
+      clientVersion: pagePath,
+      deviceIdSource: "website_session",
+    });
+
+    const { error } = await this.client
+      .from("be_home_presence_sessions")
+      .upsert(
+        {
+          session_id: sessionId,
+          device_id_hash: deviceIdHash,
+          auth_state: authState,
+          surface: "be_website",
+          started_at: existingSession?.started_at ?? now,
+          last_seen_at: now,
+          ended_at: null,
+          country_code: countryCode,
+          client_version: pagePath,
+          app_environment: appEnvironment,
+          device_id_source: "website_session",
+        },
+        { onConflict: "session_id" },
+      );
+    if (error) {
+      throw problem(500, "be_website_presence_upsert_failed", "BE website presence could not be recorded.", error.message);
+    }
+
+    return {
+      accepted: true,
+      session: {
+        sessionId,
+        authState,
+        lastSeenAt: now,
+        heartbeatIntervalSeconds: beWebsiteHeartbeatIntervalSeconds,
+        activeTtlSeconds: beWebsiteActiveTtlSeconds,
+      },
+    };
+  }
+
   async endBeHomePresenceSession(input: BeHomePresenceEndRequest): Promise<{
     accepted: true;
     session: {
@@ -1727,6 +1808,10 @@ export class WorkerAppService {
       activeNowTotal: number;
       activeNowAnonymous: number;
       activeNowSignedIn: number;
+      websiteActiveNowTotal: number;
+      websiteActiveNowAnonymous: number;
+      websiteActiveNowSignedIn: number;
+      communityActiveNowTotal: number;
       totalBoardsSeen: number;
       dailyActiveDevices: number;
       weeklyActiveDevices: number;
@@ -1737,28 +1822,42 @@ export class WorkerAppService {
     const now = Date.now();
     const sessions = await this.listBeHomePresenceSessions();
     const deviceIdentities = await this.listBeHomeDeviceIdentities();
-    const thresholdTime = now - (beHomeActiveTtlSeconds * 1000);
+    const beHomeThresholdTime = now - (beHomeActiveTtlSeconds * 1000);
+    const beWebsiteThresholdTime = now - (beWebsiteActiveTtlSeconds * 1000);
     const dailyThresholdTime = now - (24 * 60 * 60 * 1000);
     const weeklyThresholdTime = now - (7 * 24 * 60 * 60 * 1000);
     const monthlyThresholdTime = now - (30 * 24 * 60 * 60 * 1000);
-    const activeSessions = sessions.filter((session) =>
+    const activeBeHomeSessions = sessions.filter((session) =>
+      session.surface === "be_home" &&
       !session.ended_at &&
-      Date.parse(session.last_seen_at) >= thresholdTime,
+      Date.parse(session.last_seen_at) >= beHomeThresholdTime,
     );
-    const dailyActiveDevices = deviceIdentities.filter((deviceIdentity) => Date.parse(deviceIdentity.last_seen_at) >= dailyThresholdTime).length;
-    const weeklyActiveDevices = deviceIdentities.filter((deviceIdentity) => Date.parse(deviceIdentity.last_seen_at) >= weeklyThresholdTime).length;
-    const monthlyActiveDevices = deviceIdentities.filter((deviceIdentity) => Date.parse(deviceIdentity.last_seen_at) >= monthlyThresholdTime).length;
-    const activeNowAnonymous = activeSessions.filter((session) => session.auth_state === "anonymous").length;
-    const activeNowSignedIn = activeSessions.filter((session) => session.auth_state === "signed_in").length;
+    const activeWebsiteSessions = sessions.filter((session) =>
+      session.surface === "be_website" &&
+      !session.ended_at &&
+      Date.parse(session.last_seen_at) >= beWebsiteThresholdTime,
+    );
+    const boardDeviceIdentities = deviceIdentities.filter((deviceIdentity) => deviceIdentity.last_device_id_source !== "website_session");
+    const dailyActiveDevices = boardDeviceIdentities.filter((deviceIdentity) => Date.parse(deviceIdentity.last_seen_at) >= dailyThresholdTime).length;
+    const weeklyActiveDevices = boardDeviceIdentities.filter((deviceIdentity) => Date.parse(deviceIdentity.last_seen_at) >= weeklyThresholdTime).length;
+    const monthlyActiveDevices = boardDeviceIdentities.filter((deviceIdentity) => Date.parse(deviceIdentity.last_seen_at) >= monthlyThresholdTime).length;
+    const activeNowAnonymous = activeBeHomeSessions.filter((session) => session.auth_state === "anonymous").length;
+    const activeNowSignedIn = activeBeHomeSessions.filter((session) => session.auth_state === "signed_in").length;
+    const websiteActiveNowAnonymous = activeWebsiteSessions.filter((session) => session.auth_state === "anonymous").length;
+    const websiteActiveNowSignedIn = activeWebsiteSessions.filter((session) => session.auth_state === "signed_in").length;
     // These identity-based aggregates are directional BE Home estimates while ANDROID_ID remains the primary stable source.
     // They should not be interpreted as authoritative Board hardware totals.
 
     return {
       metrics: {
-        activeNowTotal: activeSessions.length,
+        activeNowTotal: activeBeHomeSessions.length,
         activeNowAnonymous,
         activeNowSignedIn,
-        totalBoardsSeen: deviceIdentities.length,
+        websiteActiveNowTotal: activeWebsiteSessions.length,
+        websiteActiveNowAnonymous,
+        websiteActiveNowSignedIn,
+        communityActiveNowTotal: activeBeHomeSessions.length + activeWebsiteSessions.length,
+        totalBoardsSeen: boardDeviceIdentities.length,
         dailyActiveDevices,
         weeklyActiveDevices,
         monthlyActiveDevices,

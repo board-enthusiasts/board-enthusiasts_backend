@@ -4,6 +4,7 @@ import worker, {
   handleBeHomeMetricsRoute,
   handleBeHomePresenceEndRoute,
   handleBeHomePresenceRoute,
+  handleBeWebsitePresenceRoute,
   handleMarketingSignupRoute,
   handleSupportIssueRoute,
 } from "./worker";
@@ -498,6 +499,53 @@ describe("BE Home internal presence routes", () => {
     });
   });
 
+  it("accepts a BE website presence heartbeat without a browser origin", async () => {
+    const service = {
+      upsertBeWebsitePresenceSession: vi.fn().mockResolvedValue({
+        accepted: true,
+        session: {
+          sessionId: "website-session-1",
+          authState: "anonymous",
+          lastSeenAt: "2026-04-10T15:00:00.000Z",
+          heartbeatIntervalSeconds: 30,
+          activeTtlSeconds: 600,
+        },
+      }),
+    };
+
+    const request = new Request("http://example.test/internal/be-home/website-presence", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "website-session-1",
+        authState: "anonymous",
+        pagePath: "/browse",
+        appEnvironment: "production",
+      }),
+    });
+    Object.defineProperty(request, "cf", {
+      value: { country: "US" },
+      configurable: true,
+    });
+
+    const response = await handleBeWebsitePresenceRoute(
+      request,
+      service as never,
+      {},
+    );
+
+    expect(response.status).toBe(202);
+    expect(service.upsertBeWebsitePresenceSession).toHaveBeenCalledWith(
+      {
+        sessionId: "website-session-1",
+        authState: "anonymous",
+        pagePath: "/browse",
+        appEnvironment: "production",
+      },
+      { countryCode: "US" },
+    );
+  });
+
   it("returns aggregate BE Home metrics", async () => {
     const service = {
       getBeHomeMetrics: vi.fn().mockResolvedValue({
@@ -505,6 +553,10 @@ describe("BE Home internal presence routes", () => {
           activeNowTotal: 7,
           activeNowAnonymous: 4,
           activeNowSignedIn: 3,
+          websiteActiveNowTotal: 5,
+          websiteActiveNowAnonymous: 4,
+          websiteActiveNowSignedIn: 1,
+          communityActiveNowTotal: 12,
           totalBoardsSeen: 21,
           dailyActiveDevices: 9,
           weeklyActiveDevices: 14,
@@ -604,6 +656,10 @@ describe("worker public identifier routes", () => {
         activeNowTotal: 2,
         activeNowAnonymous: 1,
         activeNowSignedIn: 1,
+        websiteActiveNowTotal: 3,
+        websiteActiveNowAnonymous: 2,
+        websiteActiveNowSignedIn: 1,
+        communityActiveNowTotal: 5,
         totalBoardsSeen: 11,
         dailyActiveDevices: 5,
         weeklyActiveDevices: 7,
@@ -616,5 +672,44 @@ describe("worker public identifier routes", () => {
 
     expect(response.status).toBe(200);
     expect(getBeHomeMetrics).toHaveBeenCalledOnce();
+  });
+
+  it("routes BE website presence heartbeats to the internal presence service", async () => {
+    const upsertBeWebsitePresenceSession = vi.spyOn(WorkerAppService.prototype, "upsertBeWebsitePresenceSession").mockResolvedValue({
+      accepted: true,
+      session: {
+        sessionId: "website-session-123",
+        authState: "anonymous",
+        lastSeenAt: "2026-04-10T15:00:00.000Z",
+        heartbeatIntervalSeconds: 30,
+        activeTtlSeconds: 600,
+      },
+    });
+
+    const request = new Request("http://example.test/internal/be-home/website-presence", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "website-session-123",
+        authState: "anonymous",
+        pagePath: "/browse?sort=featured",
+      }),
+    });
+    Object.defineProperty(request, "cf", {
+      value: { country: "CA" },
+      configurable: true,
+    });
+
+    const response = await worker.fetch(request, minimalEnv);
+
+    expect(response.status).toBe(202);
+    expect(upsertBeWebsitePresenceSession).toHaveBeenCalledWith(
+      {
+        sessionId: "website-session-123",
+        authState: "anonymous",
+        pagePath: "/browse?sort=featured",
+      },
+      { countryCode: "CA" },
+    );
   });
 });

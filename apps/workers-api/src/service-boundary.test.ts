@@ -108,7 +108,7 @@ type BeHomePresenceSessionRow = {
   session_id: string;
   device_id_hash: string;
   auth_state: "anonymous" | "signed_in";
-  surface: "be_home";
+  surface: "be_home" | "be_website";
   started_at: string;
   last_seen_at: string;
   ended_at: string | null;
@@ -2758,6 +2758,80 @@ describe("WorkerAppService BE Home presence", () => {
         activeNowTotal: 1,
         activeNowAnonymous: 0,
         activeNowSignedIn: 1,
+        websiteActiveNowTotal: 0,
+        websiteActiveNowAnonymous: 0,
+        websiteActiveNowSignedIn: 0,
+        communityActiveNowTotal: 1,
+        totalBoardsSeen: 1,
+        dailyActiveDevices: 1,
+        weeklyActiveDevices: 1,
+        monthlyActiveDevices: 1,
+        updatedAt: expect.any(String),
+      },
+    });
+  });
+
+  it("tracks BE website presence separately and excludes website sessions from Board device totals", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    await service.upsertBeHomePresenceSession({
+      sessionId: "be-home-session-1",
+      deviceId: "raw-device-1",
+      authState: "signed_in",
+      deviceIdSource: "android_secure_android_id",
+      clientVersion: "1.0.0",
+      appEnvironment: "production",
+    });
+
+    const websiteResponse = await service.upsertBeWebsitePresenceSession(
+      {
+        sessionId: "website-session-1",
+        authState: "anonymous",
+        pagePath: "/browse?sort=featured",
+        appEnvironment: "production",
+      },
+      { countryCode: "US" },
+    );
+
+    expect(websiteResponse).toEqual({
+      accepted: true,
+      session: {
+        sessionId: "website-session-1",
+        authState: "anonymous",
+        lastSeenAt: expect.any(String),
+        heartbeatIntervalSeconds: 30,
+        activeTtlSeconds: 600,
+      },
+    });
+    expect(tables.be_home_presence_sessions).toHaveLength(2);
+    expect(tables.be_home_presence_sessions[1]).toMatchObject({
+      session_id: "website-session-1",
+      auth_state: "anonymous",
+      surface: "be_website",
+      client_version: "/browse?sort=featured",
+      device_id_source: "website_session",
+      ended_at: null,
+    });
+    expect(tables.be_home_device_identities).toHaveLength(2);
+    expect(tables.be_home_device_identities[1]).toMatchObject({
+      last_device_id_source: "website_session",
+      last_client_version: "/browse?sort=featured",
+    });
+
+    await expect(service.getBeHomeMetrics()).resolves.toEqual({
+      metrics: {
+        activeNowTotal: 1,
+        activeNowAnonymous: 0,
+        activeNowSignedIn: 1,
+        websiteActiveNowTotal: 1,
+        websiteActiveNowAnonymous: 1,
+        websiteActiveNowSignedIn: 0,
+        communityActiveNowTotal: 2,
         totalBoardsSeen: 1,
         dailyActiveDevices: 1,
         weeklyActiveDevices: 1,
@@ -2874,6 +2948,10 @@ describe("WorkerAppService BE Home presence", () => {
         activeNowTotal: 2,
         activeNowAnonymous: 1,
         activeNowSignedIn: 1,
+        websiteActiveNowTotal: 0,
+        websiteActiveNowAnonymous: 0,
+        websiteActiveNowSignedIn: 0,
+        communityActiveNowTotal: 2,
         totalBoardsSeen: 4,
         dailyActiveDevices: 1,
         weeklyActiveDevices: 2,
@@ -2932,6 +3010,10 @@ describe("WorkerAppService BE Home presence", () => {
         activeNowTotal: 0,
         activeNowAnonymous: 0,
         activeNowSignedIn: 0,
+        websiteActiveNowTotal: 0,
+        websiteActiveNowAnonymous: 0,
+        websiteActiveNowSignedIn: 0,
+        communityActiveNowTotal: 0,
         totalBoardsSeen: 1,
         dailyActiveDevices: 1,
         weeklyActiveDevices: 1,
