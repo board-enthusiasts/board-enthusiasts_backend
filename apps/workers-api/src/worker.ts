@@ -1,6 +1,13 @@
 import type { MarketingSignupRequest, UpdateUserProfileRequest, UpsertBoardProfileRequest } from "@board-enthusiasts/migration-contract";
 import { empty, json, ApiError, corsHeaders, problem, validationProblem } from "./http";
-import { Env, WorkerAppService, type AnalyticsEventRequest, type WorkerAppContext } from "./service-boundary";
+import {
+  Env,
+  WorkerAppService,
+  type AnalyticsEventRequest,
+  type BeHomePresenceEndRequest,
+  type BeHomePresenceRequest,
+  type WorkerAppContext,
+} from "./service-boundary";
 
 const localMarketingOrigins = [
   "http://localhost:5173",
@@ -169,6 +176,50 @@ export async function handleAnalyticsEventRoute(
   });
 }
 
+function readCfCountryCode(request: Request): string | null {
+  const requestWithCf = request as Request & { cf?: { country?: string | null } };
+  const country = requestWithCf.cf?.country;
+  return typeof country === "string" ? country : null;
+}
+
+export async function handleBeHomePresenceRoute(
+  request: Request,
+  service: Pick<WorkerAppService, "upsertBeHomePresenceSession">,
+  responseHeaders: HeadersInit,
+): Promise<Response> {
+  return json(
+    await service.upsertBeHomePresenceSession(await readJson<BeHomePresenceRequest>(request), {
+      countryCode: readCfCountryCode(request),
+    }),
+    {
+      status: 202,
+      headers: responseHeaders,
+    },
+  );
+}
+
+export async function handleBeHomePresenceEndRoute(
+  request: Request,
+  service: Pick<WorkerAppService, "endBeHomePresenceSession">,
+  responseHeaders: HeadersInit,
+): Promise<Response> {
+  return json(await service.endBeHomePresenceSession(await readJson<BeHomePresenceEndRequest>(request)), {
+    status: 202,
+    headers: responseHeaders,
+  });
+}
+
+export async function handleBeHomeMetricsRoute(
+  _request: Request,
+  service: Pick<WorkerAppService, "getBeHomeMetrics">,
+  responseHeaders: HeadersInit,
+): Promise<Response> {
+  return json(await service.getBeHomeMetrics(), {
+    status: 200,
+    headers: responseHeaders,
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const service = new WorkerAppService(env);
@@ -207,6 +258,18 @@ export default {
 
       if (request.method === "POST" && url.pathname === "/analytics/events") {
         return handleAnalyticsEventRoute(request, service, responseHeaders);
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/be-home/presence") {
+        return handleBeHomePresenceRoute(request, service, responseHeaders);
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/be-home/presence/end") {
+        return handleBeHomePresenceEndRoute(request, service, responseHeaders);
+      }
+
+      if (request.method === "GET" && url.pathname === "/internal/be-home/metrics") {
+        return handleBeHomeMetricsRoute(request, service, responseHeaders);
       }
 
       if (request.method === "GET" && url.pathname === "/genres") {

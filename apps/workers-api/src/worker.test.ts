@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import worker, { handleAnalyticsEventRoute, handleMarketingSignupRoute, handleSupportIssueRoute } from "./worker";
+import worker, {
+  handleAnalyticsEventRoute,
+  handleBeHomeMetricsRoute,
+  handleBeHomePresenceEndRoute,
+  handleBeHomePresenceRoute,
+  handleMarketingSignupRoute,
+  handleSupportIssueRoute,
+} from "./worker";
 import { WorkerAppService, type Env } from "./service-boundary";
 
 const minimalEnv: Env = {
@@ -410,6 +417,116 @@ describe("handleAnalyticsEventRoute", () => {
   });
 });
 
+describe("BE Home internal presence routes", () => {
+  it("accepts a BE Home presence heartbeat without a browser origin", async () => {
+    const service = {
+      upsertBeHomePresenceSession: vi.fn().mockResolvedValue({
+        accepted: true,
+        session: {
+          sessionId: "session-1",
+          authState: "anonymous",
+          lastSeenAt: "2026-04-10T15:00:00.000Z",
+          heartbeatIntervalSeconds: 60,
+          activeTtlSeconds: 180,
+        },
+      }),
+    };
+
+    const request = new Request("http://example.test/internal/be-home/presence", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "session-1",
+        deviceId: "board-install-1",
+        authState: "anonymous",
+        deviceIdSource: "install_id",
+        clientVersion: "1.0.0",
+        appEnvironment: "production",
+      }),
+    });
+    Object.defineProperty(request, "cf", {
+      value: { country: "US" },
+      configurable: true,
+    });
+
+    const response = await handleBeHomePresenceRoute(
+      request,
+      service as never,
+      {},
+    );
+
+    expect(response.status).toBe(202);
+    expect(service.upsertBeHomePresenceSession).toHaveBeenCalledWith(
+      {
+        sessionId: "session-1",
+        deviceId: "board-install-1",
+        authState: "anonymous",
+        deviceIdSource: "install_id",
+        clientVersion: "1.0.0",
+        appEnvironment: "production",
+      },
+      { countryCode: "US" },
+    );
+  });
+
+  it("accepts a best-effort BE Home disconnect request", async () => {
+    const service = {
+      endBeHomePresenceSession: vi.fn().mockResolvedValue({
+        accepted: true,
+        session: {
+          sessionId: "session-1",
+          endedAt: "2026-04-10T15:03:00.000Z",
+        },
+      }),
+    };
+
+    const response = await handleBeHomePresenceEndRoute(
+      new Request("http://example.test/internal/be-home/presence/end", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionId: "session-1",
+        }),
+      }),
+      service as never,
+      {},
+    );
+
+    expect(response.status).toBe(202);
+    expect(service.endBeHomePresenceSession).toHaveBeenCalledWith({
+      sessionId: "session-1",
+    });
+  });
+
+  it("returns aggregate BE Home metrics", async () => {
+    const service = {
+      getBeHomeMetrics: vi.fn().mockResolvedValue({
+        metrics: {
+          activeNowTotal: 7,
+          activeNowAnonymous: 4,
+          activeNowSignedIn: 3,
+          totalBoardsSeen: 21,
+          dailyActiveDevices: 9,
+          weeklyActiveDevices: 14,
+          monthlyActiveDevices: 18,
+          updatedAt: "2026-04-10T15:03:00.000Z",
+        },
+      }),
+    };
+
+    const response = await handleBeHomeMetricsRoute(
+      new Request("http://example.test/internal/be-home/metrics", {
+        method: "GET",
+      }),
+      service as never,
+      {},
+    );
+
+    expect(response.status).toBe(200);
+    expect(service.getBeHomeMetrics).toHaveBeenCalledOnce();
+  });
+});
+
 describe("worker public identifier routes", () => {
   it("routes catalog title detail requests with studio and title ids", async () => {
     const getCatalogTitle = vi.spyOn(WorkerAppService.prototype, "getCatalogTitle").mockResolvedValue({
@@ -440,5 +557,64 @@ describe("worker public identifier routes", () => {
 
     expect(response.status).toBe(200);
     expect(getPublicStudio).toHaveBeenCalledWith("studio-1");
+  });
+
+  it("routes BE Home presence heartbeats to the internal presence service", async () => {
+    const upsertBeHomePresenceSession = vi.spyOn(WorkerAppService.prototype, "upsertBeHomePresenceSession").mockResolvedValue({
+      accepted: true,
+      session: {
+        sessionId: "session-123",
+        authState: "anonymous",
+        lastSeenAt: "2026-04-10T15:00:00.000Z",
+        heartbeatIntervalSeconds: 60,
+        activeTtlSeconds: 180,
+      },
+    });
+
+    const request = new Request("http://example.test/internal/be-home/presence", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sessionId: "session-123",
+        deviceId: "install-id-123",
+        authState: "anonymous",
+      }),
+    });
+    Object.defineProperty(request, "cf", {
+      value: { country: "CA" },
+      configurable: true,
+    });
+
+    const response = await worker.fetch(request, minimalEnv);
+
+    expect(response.status).toBe(202);
+    expect(upsertBeHomePresenceSession).toHaveBeenCalledWith(
+      {
+        sessionId: "session-123",
+        deviceId: "install-id-123",
+        authState: "anonymous",
+      },
+      { countryCode: "CA" },
+    );
+  });
+
+  it("routes BE Home metrics requests to the internal metrics service", async () => {
+    const getBeHomeMetrics = vi.spyOn(WorkerAppService.prototype, "getBeHomeMetrics").mockResolvedValue({
+      metrics: {
+        activeNowTotal: 2,
+        activeNowAnonymous: 1,
+        activeNowSignedIn: 1,
+        totalBoardsSeen: 11,
+        dailyActiveDevices: 5,
+        weeklyActiveDevices: 7,
+        monthlyActiveDevices: 10,
+        updatedAt: "2026-04-10T15:03:00.000Z",
+      },
+    });
+
+    const response = await worker.fetch(new Request("http://example.test/internal/be-home/metrics"), minimalEnv);
+
+    expect(response.status).toBe(200);
+    expect(getBeHomeMetrics).toHaveBeenCalledOnce();
   });
 });

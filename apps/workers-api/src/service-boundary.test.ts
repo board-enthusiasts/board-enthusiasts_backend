@@ -56,6 +56,16 @@ type AppUserRoleRow = {
   role: "player" | "developer" | "verified_developer" | "moderator" | "admin" | "super_admin";
 };
 
+type BoardProfileRow = {
+  user_id: string;
+  board_user_id: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  linked_at: string;
+  last_synced_at: string;
+  updated_at: string;
+};
+
 type TitleRow = {
   id: string;
   lifecycle_status: "draft" | "active" | "archived";
@@ -94,6 +104,30 @@ type CatalogMediaEntryRow = {
   updated_at: string;
 };
 
+type BeHomePresenceSessionRow = {
+  session_id: string;
+  device_id_hash: string;
+  auth_state: "anonymous" | "signed_in";
+  surface: "be_home";
+  started_at: string;
+  last_seen_at: string;
+  ended_at: string | null;
+  country_code: string | null;
+  client_version: string | null;
+  app_environment: string | null;
+  device_id_source: string | null;
+};
+
+type BeHomeDeviceIdentityRow = {
+  device_id_hash: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  first_country_code: string | null;
+  last_country_code: string | null;
+  last_client_version: string | null;
+  last_device_id_source: string | null;
+};
+
 type WorkerAppServicePrivateTestAccess = {
   getDeveloperTitleDetails(userId: string, titleId: string): Promise<Record<string, unknown>>;
   getUsersByIds(userIds: string[]): Promise<AppUserRow[]>;
@@ -108,17 +142,23 @@ const tables: {
   marketing_contact_role_interests: RoleInterestRow[];
   app_users: AppUserRow[];
   app_user_roles: AppUserRoleRow[];
+  user_board_profiles: BoardProfileRow[];
   titles: TitleRow[];
   user_notifications: UserNotificationRow[];
   catalog_media_entries: CatalogMediaEntryRow[];
+  be_home_presence_sessions: BeHomePresenceSessionRow[];
+  be_home_device_identities: BeHomeDeviceIdentityRow[];
 } = {
   marketing_contacts: [],
   marketing_contact_role_interests: [],
   app_users: [],
   app_user_roles: [],
+  user_board_profiles: [],
   titles: [],
   user_notifications: [],
   catalog_media_entries: [],
+  be_home_presence_sessions: [],
+  be_home_device_identities: [],
 };
 
 function resetTables() {
@@ -126,9 +166,12 @@ function resetTables() {
   tables.marketing_contact_role_interests = [];
   tables.app_users = [];
   tables.app_user_roles = [];
+  tables.user_board_profiles = [];
   tables.titles = [];
   tables.user_notifications = [];
   tables.catalog_media_entries = [];
+  tables.be_home_presence_sessions = [];
+  tables.be_home_device_identities = [];
 }
 
 const supabaseAuthMocks = vi.hoisted(() => ({
@@ -2115,6 +2158,69 @@ describe("WorkerAppService moderation title reports", () => {
   });
 });
 
+describe("WorkerAppService Board profile", () => {
+  beforeEach(() => {
+    resetTables();
+    vi.restoreAllMocks();
+    supabaseAuthMocks.getUser.mockReset();
+    supabaseAuthMocks.updateUserById.mockReset();
+    supabaseAuthMocks.listUsers.mockReset();
+    supabaseAuthMocks.signInWithPassword.mockReset();
+  });
+
+  it("returns a null Board profile when the current user has not linked one", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: { id: "user-1" },
+      roles: ["player"],
+    });
+
+    await expect(service.getBoardProfile("player-token")).resolves.toEqual({
+      boardProfile: null,
+    });
+  });
+
+  it("returns the linked Board profile when the current user has one", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    tables.user_board_profiles.push({
+      user_id: "user-1",
+      board_user_id: "board_emma_torres",
+      display_name: "Emma Torres",
+      avatar_url: "https://cdn.board.fun/avatars/board_emma_torres.png",
+      linked_at: "2026-03-08T00:00:00.000Z",
+      last_synced_at: "2026-03-08T00:00:00.000Z",
+      updated_at: "2026-03-08T00:00:00.000Z",
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: { id: "user-1" },
+      roles: ["player"],
+    });
+
+    await expect(service.getBoardProfile("player-token")).resolves.toEqual({
+      boardProfile: {
+        boardUserId: "board_emma_torres",
+        displayName: "Emma Torres",
+        avatarUrl: "https://cdn.board.fun/avatars/board_emma_torres.png",
+        linkedAt: "2026-03-08T00:00:00.000Z",
+        lastSyncedAt: "2026-03-08T00:00:00.000Z",
+      },
+    });
+  });
+});
+
 describe("WorkerAppService current-user notifications", () => {
   beforeEach(() => {
     resetTables();
@@ -2545,6 +2651,294 @@ describe("canViewerAccessTitleReportMessageAudience", () => {
     expect(canViewerAccessTitleReportMessageAudience("player", "moderator")).toBe(true);
     expect(canViewerAccessTitleReportMessageAudience("developer", "moderator")).toBe(true);
     expect(canViewerAccessTitleReportMessageAudience("unexpected", "moderator")).toBe(true);
+  });
+});
+
+describe("WorkerAppService BE Home presence", () => {
+  beforeEach(() => {
+    resetTables();
+    vi.restoreAllMocks();
+    supabaseAuthMocks.getUser.mockReset();
+    supabaseAuthMocks.updateUserById.mockReset();
+    supabaseAuthMocks.listUsers.mockReset();
+    supabaseAuthMocks.signInWithPassword.mockReset();
+  });
+
+  it("upserts a BE Home session and hashes the raw device identifier server-side", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    const response = await service.upsertBeHomePresenceSession(
+      {
+        sessionId: "session-1",
+        deviceId: "raw-device-1",
+        authState: "anonymous",
+        deviceIdSource: "install_id",
+        clientVersion: "1.0.0",
+        appEnvironment: "production",
+      },
+      { countryCode: "US" },
+    );
+
+    expect(response).toEqual({
+      accepted: true,
+      session: {
+        sessionId: "session-1",
+        authState: "anonymous",
+        lastSeenAt: expect.any(String),
+        heartbeatIntervalSeconds: 60,
+        activeTtlSeconds: 180,
+      },
+    });
+    expect(tables.be_home_presence_sessions).toHaveLength(1);
+    expect(tables.be_home_device_identities).toHaveLength(1);
+    expect(tables.be_home_presence_sessions[0]).toMatchObject({
+      session_id: "session-1",
+      auth_state: "anonymous",
+      country_code: "US",
+      client_version: "1.0.0",
+      app_environment: "production",
+      device_id_source: "install_id",
+      ended_at: null,
+    });
+    expect(tables.be_home_presence_sessions[0]!.device_id_hash).not.toBe("raw-device-1");
+    expect(tables.be_home_presence_sessions[0]!.device_id_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(tables.be_home_device_identities[0]).toMatchObject({
+      device_id_hash: tables.be_home_presence_sessions[0]!.device_id_hash,
+      first_country_code: "US",
+      last_country_code: "US",
+      last_client_version: "1.0.0",
+      last_device_id_source: "install_id",
+    });
+  });
+
+  it("updates the same BE Home session when auth state changes without duplicating the active count", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    await service.upsertBeHomePresenceSession({
+      sessionId: "session-1",
+      deviceId: "raw-device-1",
+      authState: "anonymous",
+      deviceIdSource: "install_id",
+      clientVersion: "0.9.0",
+      appEnvironment: "production",
+    });
+
+    await service.upsertBeHomePresenceSession({
+      sessionId: "session-1",
+      deviceId: "raw-device-1",
+      authState: "signed_in",
+      deviceIdSource: "android_secure_android_id",
+      clientVersion: "1.0.0",
+      appEnvironment: "production",
+    });
+
+    expect(tables.be_home_presence_sessions).toHaveLength(1);
+    expect(tables.be_home_presence_sessions[0]).toMatchObject({
+      session_id: "session-1",
+      auth_state: "signed_in",
+      client_version: "1.0.0",
+      device_id_source: "android_secure_android_id",
+      ended_at: null,
+    });
+    expect(tables.be_home_device_identities).toHaveLength(1);
+    expect(tables.be_home_presence_sessions[0]!.device_id_hash).toBe(tables.be_home_device_identities[0]!.device_id_hash);
+
+    await expect(service.getBeHomeMetrics()).resolves.toEqual({
+      metrics: {
+        activeNowTotal: 1,
+        activeNowAnonymous: 0,
+        activeNowSignedIn: 1,
+        totalBoardsSeen: 1,
+        dailyActiveDevices: 1,
+        weeklyActiveDevices: 1,
+        monthlyActiveDevices: 1,
+        updatedAt: expect.any(String),
+      },
+    });
+  });
+
+  it("excludes stale and ended sessions from active metrics", async () => {
+    const now = Date.now();
+    tables.be_home_presence_sessions.push(
+      {
+        session_id: "session-active-anon",
+        device_id_hash: "hash-1",
+        auth_state: "anonymous",
+        surface: "be_home",
+        started_at: new Date(now - 120_000).toISOString(),
+        last_seen_at: new Date(now - 20_000).toISOString(),
+        ended_at: null,
+        country_code: "US",
+        client_version: "1.0.0",
+        app_environment: "production",
+        device_id_source: "install_id",
+      },
+      {
+        session_id: "session-active-signed-in",
+        device_id_hash: "hash-2",
+        auth_state: "signed_in",
+        surface: "be_home",
+        started_at: new Date(now - 150_000).toISOString(),
+        last_seen_at: new Date(now - 30_000).toISOString(),
+        ended_at: null,
+        country_code: "CA",
+        client_version: "1.0.0",
+        app_environment: "production",
+        device_id_source: "android_secure_android_id",
+      },
+      {
+        session_id: "session-stale",
+        device_id_hash: "hash-3",
+        auth_state: "anonymous",
+        surface: "be_home",
+        started_at: new Date(now - 500_000).toISOString(),
+        last_seen_at: new Date(now - 400_000).toISOString(),
+        ended_at: null,
+        country_code: "GB",
+        client_version: "1.0.0",
+        app_environment: "production",
+        device_id_source: "install_id",
+      },
+      {
+        session_id: "session-ended",
+        device_id_hash: "hash-4",
+        auth_state: "signed_in",
+        surface: "be_home",
+        started_at: new Date(now - 200_000).toISOString(),
+        last_seen_at: new Date(now - 10_000).toISOString(),
+        ended_at: new Date(now - 5_000).toISOString(),
+        country_code: "US",
+        client_version: "1.0.0",
+        app_environment: "production",
+        device_id_source: "install_id",
+      },
+    );
+    tables.be_home_device_identities.push(
+      {
+        device_id_hash: "hash-1",
+        first_seen_at: new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString(),
+        last_seen_at: new Date(now - 20_000).toISOString(),
+        first_country_code: "US",
+        last_country_code: "US",
+        last_client_version: "1.0.0",
+        last_device_id_source: "install_id",
+      },
+      {
+        device_id_hash: "hash-2",
+        first_seen_at: new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString(),
+        last_seen_at: new Date(now - 2 * 24 * 60 * 60 * 1000).toISOString(),
+        first_country_code: "CA",
+        last_country_code: "CA",
+        last_client_version: "1.0.0",
+        last_device_id_source: "android_secure_android_id",
+      },
+      {
+        device_id_hash: "hash-3",
+        first_seen_at: new Date(now - 31 * 24 * 60 * 60 * 1000).toISOString(),
+        last_seen_at: new Date(now - 8 * 24 * 60 * 60 * 1000).toISOString(),
+        first_country_code: "GB",
+        last_country_code: "GB",
+        last_client_version: "1.0.0",
+        last_device_id_source: "install_id",
+      },
+      {
+        device_id_hash: "hash-4",
+        first_seen_at: new Date(now - 40 * 24 * 60 * 60 * 1000).toISOString(),
+        last_seen_at: new Date(now - 40 * 24 * 60 * 60 * 1000).toISOString(),
+        first_country_code: "US",
+        last_country_code: "US",
+        last_client_version: "1.0.0",
+        last_device_id_source: "install_id",
+      },
+    );
+
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    await expect(service.getBeHomeMetrics()).resolves.toEqual({
+      metrics: {
+        activeNowTotal: 2,
+        activeNowAnonymous: 1,
+        activeNowSignedIn: 1,
+        totalBoardsSeen: 4,
+        dailyActiveDevices: 1,
+        weeklyActiveDevices: 2,
+        monthlyActiveDevices: 3,
+        updatedAt: expect.any(String),
+      },
+    });
+  });
+
+  it("marks a BE Home session as ended on best-effort disconnect", async () => {
+    const now = Date.now();
+    tables.be_home_presence_sessions.push({
+      session_id: "session-1",
+      device_id_hash: "hash-1",
+      auth_state: "signed_in",
+      surface: "be_home",
+      started_at: new Date(now - 120_000).toISOString(),
+      last_seen_at: new Date(now - 5_000).toISOString(),
+      ended_at: null,
+      country_code: "US",
+      client_version: "1.0.0",
+      app_environment: "production",
+      device_id_source: "install_id",
+    });
+    tables.be_home_device_identities.push({
+      device_id_hash: "hash-1",
+      first_seen_at: new Date(now - 120_000).toISOString(),
+      last_seen_at: new Date(now - 5_000).toISOString(),
+      first_country_code: "US",
+      last_country_code: "US",
+      last_client_version: "1.0.0",
+      last_device_id_source: "install_id",
+    });
+
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    const response = await service.endBeHomePresenceSession({
+      sessionId: "session-1",
+    });
+
+    expect(response).toEqual({
+      accepted: true,
+      session: {
+        sessionId: "session-1",
+        endedAt: expect.any(String),
+      },
+    });
+    expect(tables.be_home_presence_sessions[0]!.ended_at).not.toBeNull();
+    await expect(service.getBeHomeMetrics()).resolves.toEqual({
+      metrics: {
+        activeNowTotal: 0,
+        activeNowAnonymous: 0,
+        activeNowSignedIn: 0,
+        totalBoardsSeen: 1,
+        dailyActiveDevices: 1,
+        weeklyActiveDevices: 1,
+        monthlyActiveDevices: 1,
+        updatedAt: expect.any(String),
+      },
+    });
   });
 });
 

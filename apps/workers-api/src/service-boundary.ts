@@ -452,6 +452,30 @@ type WaveStateRow = {
   value: string;
 };
 
+type BeHomePresenceSessionRow = {
+  session_id: string;
+  device_id_hash: string;
+  auth_state: "anonymous" | "signed_in";
+  surface: "be_home";
+  started_at: string;
+  last_seen_at: string;
+  ended_at: string | null;
+  country_code: string | null;
+  client_version: string | null;
+  app_environment: string | null;
+  device_id_source: string | null;
+};
+
+type BeHomeDeviceIdentityRow = {
+  device_id_hash: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  first_country_code: string | null;
+  last_country_code: string | null;
+  last_client_version: string | null;
+  last_device_id_source: string | null;
+};
+
 export type TitleReportViewerRole = "player" | "developer" | "moderator";
 
 export function canViewerAccessTitleReportMessageAudience(
@@ -596,6 +620,9 @@ const analyticsEventNames = new Set([
   "homepage_spotlight_clicked",
 ] as const);
 
+const beHomeHeartbeatIntervalSeconds = 60;
+const beHomeActiveTtlSeconds = 180;
+
 function normalizeAnalyticsString(value: string | null | undefined, maxLength: number): string | null {
   const trimmed = value?.trim() ?? "";
   if (!trimmed) {
@@ -628,6 +655,28 @@ function normalizeAnalyticsMetadata(value: Record<string, unknown> | null | unde
 
 function normalizeAnalyticsDouble(value: number | null | undefined): number {
   return typeof value === "number" && Number.isFinite(value) ? value : -1;
+}
+
+function normalizeBeHomeText(value: string | null | undefined, maxLength: number): string | null {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) {
+    return null;
+  }
+
+  return trimmed.slice(0, maxLength);
+}
+
+function normalizeBeHomeAuthState(value: string | null | undefined): "anonymous" | "signed_in" {
+  return value === "signed_in" ? "signed_in" : "anonymous";
+}
+
+function normalizeBeHomeCountryCode(value: string | null | undefined): string | null {
+  const trimmed = value?.trim().toUpperCase() ?? "";
+  if (!trimmed || !/^[A-Z]{2}$/.test(trimmed)) {
+    return null;
+  }
+
+  return trimmed;
 }
 
 function readTrimmedMetadataString(metadata: Record<string, unknown>, ...keys: string[]): string | null {
@@ -1305,6 +1354,19 @@ export interface AnalyticsEventRequest {
   value2?: number | null;
 }
 
+export interface BeHomePresenceRequest {
+  sessionId: string;
+  deviceId: string;
+  authState?: "anonymous" | "signed_in" | null;
+  deviceIdSource?: string | null;
+  clientVersion?: string | null;
+  appEnvironment?: string | null;
+}
+
+export interface BeHomePresenceEndRequest {
+  sessionId: string;
+}
+
 interface AuthenticatedUser {
   appUser: AppUserRow;
   roles: PlatformRole[];
@@ -1384,6 +1446,21 @@ function createAuthVerificationClient(context: WorkerAppContext): SupabaseClient
       persistSession: false
     }
   });
+}
+
+async function hashBeHomeDeviceId(rawDeviceId: string, secret: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(rawDeviceId));
+  return Array.from(new Uint8Array(signature))
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function parseContext(env: Env): WorkerAppContext {
@@ -1531,6 +1608,162 @@ export class WorkerAppService {
     return {
       accepted: true,
       analyticsEnabled: true,
+    };
+  }
+
+  async upsertBeHomePresenceSession(
+    input: BeHomePresenceRequest,
+    options: { countryCode?: string | null } = {},
+  ): Promise<{
+    accepted: true;
+    session: {
+      sessionId: string;
+      authState: "anonymous" | "signed_in";
+      lastSeenAt: string;
+      heartbeatIntervalSeconds: number;
+      activeTtlSeconds: number;
+    };
+  }> {
+    const sessionId = normalizeBeHomeText(input.sessionId, 120);
+    const rawDeviceId = normalizeBeHomeText(input.deviceId, 512);
+    const authState = normalizeBeHomeAuthState(input.authState);
+    const deviceIdSource = normalizeBeHomeText(input.deviceIdSource, 80);
+    const clientVersion = normalizeBeHomeText(input.clientVersion, 80);
+    const appEnvironment = normalizeBeHomeText(input.appEnvironment, 80);
+    const countryCode = normalizeBeHomeCountryCode(options.countryCode);
+
+    if (!sessionId) {
+      throw validationProblem({
+        sessionId: ["Session id is required."],
+      });
+    }
+
+    if (!rawDeviceId) {
+      throw validationProblem({
+        deviceId: ["Device id is required."],
+      });
+    }
+
+    const now = new Date().toISOString();
+    const deviceIdHash = await hashBeHomeDeviceId(rawDeviceId, this.context.supabaseSecretKey);
+    const existingSession = await this.getBeHomePresenceSession(sessionId);
+
+    await this.upsertBeHomeDeviceIdentity({
+      deviceIdHash,
+      observedAt: now,
+      countryCode,
+      clientVersion,
+      deviceIdSource,
+    });
+
+    const { error } = await this.client
+      .from("be_home_presence_sessions")
+      .upsert(
+        {
+          session_id: sessionId,
+          device_id_hash: deviceIdHash,
+          auth_state: authState,
+          surface: "be_home",
+          started_at: existingSession?.started_at ?? now,
+          last_seen_at: now,
+          ended_at: null,
+          country_code: countryCode,
+          client_version: clientVersion,
+          app_environment: appEnvironment,
+          device_id_source: deviceIdSource,
+        },
+        { onConflict: "session_id" },
+      );
+    if (error) {
+      throw problem(500, "be_home_presence_upsert_failed", "BE Home presence could not be recorded.", error.message);
+    }
+
+    return {
+      accepted: true,
+      session: {
+        sessionId,
+        authState,
+        lastSeenAt: now,
+        heartbeatIntervalSeconds: beHomeHeartbeatIntervalSeconds,
+        activeTtlSeconds: beHomeActiveTtlSeconds,
+      },
+    };
+  }
+
+  async endBeHomePresenceSession(input: BeHomePresenceEndRequest): Promise<{
+    accepted: true;
+    session: {
+      sessionId: string;
+      endedAt: string;
+    };
+  }> {
+    const sessionId = normalizeBeHomeText(input.sessionId, 120);
+    if (!sessionId) {
+      throw validationProblem({
+        sessionId: ["Session id is required."],
+      });
+    }
+
+    const endedAt = new Date().toISOString();
+    const { error } = await this.client
+      .from("be_home_presence_sessions")
+      .update({ ended_at: endedAt })
+      .eq("session_id", sessionId);
+    if (error) {
+      throw problem(500, "be_home_presence_end_failed", "BE Home presence could not be updated.", error.message);
+    }
+
+    return {
+      accepted: true,
+      session: {
+        sessionId,
+        endedAt,
+      },
+    };
+  }
+
+  async getBeHomeMetrics(): Promise<{
+    metrics: {
+      activeNowTotal: number;
+      activeNowAnonymous: number;
+      activeNowSignedIn: number;
+      totalBoardsSeen: number;
+      dailyActiveDevices: number;
+      weeklyActiveDevices: number;
+      monthlyActiveDevices: number;
+      updatedAt: string;
+    };
+  }> {
+    const now = Date.now();
+    const sessions = await this.listBeHomePresenceSessions();
+    const deviceIdentities = await this.listBeHomeDeviceIdentities();
+    const thresholdTime = now - (beHomeActiveTtlSeconds * 1000);
+    const dailyThresholdTime = now - (24 * 60 * 60 * 1000);
+    const weeklyThresholdTime = now - (7 * 24 * 60 * 60 * 1000);
+    const monthlyThresholdTime = now - (30 * 24 * 60 * 60 * 1000);
+    const activeSessions = sessions.filter((session) =>
+      !session.ended_at &&
+      Date.parse(session.last_seen_at) >= thresholdTime,
+    );
+    const dailyActiveDevices = deviceIdentities.filter((deviceIdentity) => Date.parse(deviceIdentity.last_seen_at) >= dailyThresholdTime).length;
+    const weeklyActiveDevices = deviceIdentities.filter((deviceIdentity) => Date.parse(deviceIdentity.last_seen_at) >= weeklyThresholdTime).length;
+    const monthlyActiveDevices = deviceIdentities.filter((deviceIdentity) => Date.parse(deviceIdentity.last_seen_at) >= monthlyThresholdTime).length;
+    const activeNowAnonymous = activeSessions.filter((session) => session.auth_state === "anonymous").length;
+    const activeNowSignedIn = activeSessions.filter((session) => session.auth_state === "signed_in").length;
+    // These identity-based aggregates are directional BE Home estimates while ANDROID_ID remains the primary stable source.
+    // They should not be interpreted as authoritative Board hardware totals.
+
+    return {
+      metrics: {
+        activeNowTotal: activeSessions.length,
+        activeNowAnonymous,
+        activeNowSignedIn,
+        totalBoardsSeen: deviceIdentities.length,
+        dailyActiveDevices,
+        weeklyActiveDevices,
+        monthlyActiveDevices,
+        updatedAt: new Date().toISOString(),
+      },
     };
   }
 
@@ -1915,12 +2148,8 @@ export class WorkerAppService {
     }
 
     const profile = (data as BoardProfileRow[])[0];
-    if (!profile) {
-      throw problem(404, "board_profile_not_found", "Board profile not found.", "No linked Board profile exists for the current user.");
-    }
-
     return {
-      boardProfile: mapBoardProfile(profile)
+      boardProfile: profile ? mapBoardProfile(profile) : null
     };
   }
 
@@ -6457,6 +6686,81 @@ export class WorkerAppService {
     }
 
     return counts;
+  }
+
+  private async listBeHomePresenceSessions(): Promise<BeHomePresenceSessionRow[]> {
+    const { data, error } = await this.client
+      .from("be_home_presence_sessions")
+      .select("*");
+    if (error) {
+      throw problem(500, "be_home_presence_lookup_failed", "BE Home metrics are temporarily unavailable.", error.message);
+    }
+
+    return data as BeHomePresenceSessionRow[];
+  }
+
+  private async getBeHomePresenceSession(sessionId: string): Promise<BeHomePresenceSessionRow | null> {
+    const { data, error } = await this.client
+      .from("be_home_presence_sessions")
+      .select("*")
+      .eq("session_id", sessionId)
+      .limit(1);
+    if (error) {
+      throw problem(500, "be_home_presence_lookup_failed", "BE Home presence could not be recorded.", error.message);
+    }
+
+    return ((data as BeHomePresenceSessionRow[])[0] ?? null);
+  }
+
+  private async getBeHomeDeviceIdentity(deviceIdHash: string): Promise<BeHomeDeviceIdentityRow | null> {
+    const { data, error } = await this.client
+      .from("be_home_device_identities")
+      .select("*")
+      .eq("device_id_hash", deviceIdHash)
+      .limit(1);
+    if (error) {
+      throw problem(500, "be_home_device_identity_lookup_failed", "BE Home presence could not be recorded.", error.message);
+    }
+
+    return ((data as BeHomeDeviceIdentityRow[])[0] ?? null);
+  }
+
+  private async listBeHomeDeviceIdentities(): Promise<BeHomeDeviceIdentityRow[]> {
+    const { data, error } = await this.client
+      .from("be_home_device_identities")
+      .select("*");
+    if (error) {
+      throw problem(500, "be_home_device_identity_lookup_failed", "BE Home metrics are temporarily unavailable.", error.message);
+    }
+
+    return data as BeHomeDeviceIdentityRow[];
+  }
+
+  private async upsertBeHomeDeviceIdentity(input: {
+    deviceIdHash: string;
+    observedAt: string;
+    countryCode: string | null;
+    clientVersion: string | null;
+    deviceIdSource: string | null;
+  }): Promise<void> {
+    const existing = await this.getBeHomeDeviceIdentity(input.deviceIdHash);
+    const { error } = await this.client
+      .from("be_home_device_identities")
+      .upsert(
+        {
+          device_id_hash: input.deviceIdHash,
+          first_seen_at: existing?.first_seen_at ?? input.observedAt,
+          last_seen_at: input.observedAt,
+          first_country_code: existing?.first_country_code ?? input.countryCode,
+          last_country_code: input.countryCode,
+          last_client_version: input.clientVersion,
+          last_device_id_source: input.deviceIdSource,
+        },
+        { onConflict: "device_id_hash" },
+      );
+    if (error) {
+      throw problem(500, "be_home_device_identity_upsert_failed", "BE Home presence could not be recorded.", error.message);
+    }
   }
 
   private async getMarketingContactByNormalizedEmail(normalizedEmail: string): Promise<MarketingContactRow | null> {
