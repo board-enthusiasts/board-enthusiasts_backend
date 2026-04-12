@@ -4,6 +4,7 @@ import worker, {
   handleBeHomeMetricsRoute,
   handleBeHomePresenceEndRoute,
   handleBeHomePresenceRoute,
+  handleBeHomeTitleDetailViewRoute,
   handleBeWebsitePresenceRoute,
   handleMarketingSignupRoute,
   handleSupportIssueRoute,
@@ -378,12 +379,18 @@ describe("handleAnalyticsEventRoute", () => {
     );
 
     expect(response.status).toBe(202);
-    expect(service.recordAnalyticsEvent).toHaveBeenCalledWith({
-      event: "page_view",
-      path: "/browse",
-      authState: "anonymous",
-      metadata: { isNewVisitor: true },
-    });
+    expect(service.recordAnalyticsEvent).toHaveBeenCalledWith(
+      {
+        event: "page_view",
+        path: "/browse",
+        authState: "anonymous",
+        metadata: { isNewVisitor: true },
+      },
+      {
+        countryCode: null,
+        ipAddress: null,
+      },
+    );
   });
 
   it("rejects analytics events from unapproved origins", async () => {
@@ -497,6 +504,62 @@ describe("BE Home internal presence routes", () => {
     expect(service.endBeHomePresenceSession).toHaveBeenCalledWith({
       sessionId: "session-1",
     });
+  });
+
+  it("accepts a BE Home title detail view record with native device identity", async () => {
+    const service = {
+      recordBeHomeTitleDetailView: vi.fn().mockResolvedValue({
+        accepted: true,
+      }),
+    };
+
+    const request = new Request("http://example.test/internal/be-home/title-detail-views", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-be-home-session-id": "session-1",
+        "x-be-home-device-id": "board-install-1",
+        "x-be-home-device-id-source": "install_id",
+        "x-be-home-auth-state": "signed_in",
+        "x-be-home-client-version": "1.2.3",
+        "x-be-home-app-environment": "production",
+      },
+      body: JSON.stringify({
+        titleId: "title-1",
+        studioSlug: "blue-harbor-games",
+        titleSlug: "lantern-drift",
+        surface: "title-detail",
+      }),
+    });
+    Object.defineProperty(request, "cf", {
+      value: { country: "US" },
+      configurable: true,
+    });
+
+    const response = await handleBeHomeTitleDetailViewRoute(
+      request,
+      service as never,
+      {},
+    );
+
+    expect(response.status).toBe(202);
+    expect(service.recordBeHomeTitleDetailView).toHaveBeenCalledWith(
+      {
+        titleId: "title-1",
+        studioSlug: "blue-harbor-games",
+        titleSlug: "lantern-drift",
+        surface: "title-detail",
+      },
+      {
+        sessionId: "session-1",
+        deviceId: "board-install-1",
+        deviceIdSource: "install_id",
+        authState: "signed_in",
+        clientVersion: "1.2.3",
+        appEnvironment: "production",
+      },
+      { countryCode: "US" },
+    );
   });
 
   it("accepts a BE website presence heartbeat without a browser origin", async () => {
@@ -686,6 +749,56 @@ describe("worker public identifier routes", () => {
 
     expect(response.status).toBe(200);
     expect(getBeHomeMetrics).toHaveBeenCalledOnce();
+  });
+
+  it("routes BE Home title detail view requests to the internal title analytics service", async () => {
+    const recordBeHomeTitleDetailView = vi.spyOn(WorkerAppService.prototype, "recordBeHomeTitleDetailView").mockResolvedValue({
+      accepted: true,
+    });
+
+    const request = new Request("http://example.test/internal/be-home/title-detail-views", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-be-home-session-id": "be-home-session-123",
+        "x-be-home-device-id": "install-id-123",
+        "x-be-home-device-id-source": "install_id",
+        "x-be-home-auth-state": "signed_in",
+        "x-be-home-client-version": "1.2.3",
+        "x-be-home-app-environment": "production",
+      },
+      body: JSON.stringify({
+        titleId: "title-1",
+        studioSlug: "blue-harbor-games",
+        titleSlug: "lantern-drift",
+        surface: "title-detail",
+      }),
+    });
+    Object.defineProperty(request, "cf", {
+      value: { country: "CA" },
+      configurable: true,
+    });
+
+    const response = await worker.fetch(request, minimalEnv);
+
+    expect(response.status).toBe(202);
+    expect(recordBeHomeTitleDetailView).toHaveBeenCalledWith(
+      {
+        titleId: "title-1",
+        studioSlug: "blue-harbor-games",
+        titleSlug: "lantern-drift",
+        surface: "title-detail",
+      },
+      {
+        sessionId: "be-home-session-123",
+        deviceId: "install-id-123",
+        deviceIdSource: "install_id",
+        authState: "signed_in",
+        clientVersion: "1.2.3",
+        appEnvironment: "production",
+      },
+      { countryCode: "CA" },
+    );
   });
 
   it("attaches community metrics headers only when explicitly requested", async () => {

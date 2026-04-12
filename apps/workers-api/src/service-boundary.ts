@@ -333,6 +333,21 @@ type PlayerWishlistRow = {
   created_at: string;
 };
 
+type TitleDetailViewRow = {
+  title_id: string;
+  viewer_hash: string;
+  viewer_source: "ip_address" | "visitor_id" | "be_home_device";
+  auth_state: "anonymous" | "authenticated";
+  studio_slug: string | null;
+  title_slug: string | null;
+  surface: string | null;
+  app_environment: string | null;
+  first_viewed_at: string;
+  last_viewed_at: string;
+  first_country_code: string | null;
+  last_country_code: string | null;
+};
+
 type PlayerFollowedStudioRow = {
   user_id: string;
   studio_id: string;
@@ -342,6 +357,7 @@ type PlayerFollowedStudioRow = {
 type TitleCollectionCounts = {
   wishlistCount: number;
   libraryCount: number;
+  viewCount?: number;
 };
 
 type HomeOfferingSpotlightRow = {
@@ -1102,7 +1118,7 @@ function buildCatalogSummary(
   mediaRows: TitleMediaAssetRow[],
   catalogMediaEntries: CatalogMediaEntryRow[] = [],
   currentReleaseRow?: TitleReleaseRow | null,
-  collectionCounts: TitleCollectionCounts = { wishlistCount: 0, libraryCount: 0 }
+  collectionCounts: TitleCollectionCounts = { wishlistCount: 0, libraryCount: 0, viewCount: 0 }
 ): CatalogTitleSummary {
   const cardImageUrl = mediaRows.find((row) => row.media_role === "card")?.source_url ?? null;
   const logoImageUrl = mediaRows.find((row) => row.media_role === "logo")?.source_url ?? null;
@@ -1128,6 +1144,7 @@ function buildCatalogSummary(
     ageRatingValue: title.age_rating_value,
     minAgeYears: title.min_age_years,
     ageDisplay: buildAgeDisplay(title.age_rating_authority, title.age_rating_value),
+    viewCount: collectionCounts.viewCount ?? 0,
     wishlistCount: collectionCounts.wishlistCount,
     libraryCount: collectionCounts.libraryCount,
     cardImageUrl,
@@ -1144,7 +1161,7 @@ function buildCatalogDetail(
   catalogMediaEntries: CatalogMediaEntryRow[],
   showcaseRows: TitleShowcaseMediaRow[],
   currentReleaseRow?: TitleReleaseRow | null,
-  collectionCounts: TitleCollectionCounts = { wishlistCount: 0, libraryCount: 0 }
+  collectionCounts: TitleCollectionCounts = { wishlistCount: 0, libraryCount: 0, viewCount: 0 }
 ): CatalogTitle {
   return {
     ...buildCatalogSummary(title, studio, mediaRows, catalogMediaEntries, currentReleaseRow, collectionCounts),
@@ -1166,7 +1183,7 @@ function buildDeveloperTitle(
   showcaseRows: TitleShowcaseMediaRow[],
   genreSlugs: string[],
   currentReleaseRow?: TitleReleaseRow | null,
-  collectionCounts: TitleCollectionCounts = { wishlistCount: 0, libraryCount: 0 }
+  collectionCounts: TitleCollectionCounts = { wishlistCount: 0, libraryCount: 0, viewCount: 0 }
 ): DeveloperTitle {
   return {
     id: title.id,
@@ -1190,6 +1207,7 @@ function buildDeveloperTitle(
     ageRatingValue: title.age_rating_value,
     minAgeYears: title.min_age_years,
     ageDisplay: buildAgeDisplay(title.age_rating_authority, title.age_rating_value),
+    viewCount: collectionCounts.viewCount ?? 0,
     wishlistCount: collectionCounts.wishlistCount,
     libraryCount: collectionCounts.libraryCount,
     cardImageUrl: mediaRows.find((row) => row.media_role === "card")?.source_url ?? null,
@@ -1358,6 +1376,11 @@ export interface AnalyticsEventRequest {
   value2?: number | null;
 }
 
+interface AnalyticsEventOptions {
+  countryCode?: string | null;
+  ipAddress?: string | null;
+}
+
 export interface BeHomePresenceRequest {
   sessionId: string;
   deviceId: string;
@@ -1376,6 +1399,14 @@ export interface BeWebsitePresenceRequest {
 
 export interface BeHomePresenceEndRequest {
   sessionId: string;
+}
+
+export interface BeHomeTitleDetailViewRequest {
+  titleId: string;
+  studioSlug?: string | null;
+  titleSlug?: string | null;
+  route?: string | null;
+  surface?: string | null;
 }
 
 interface AuthenticatedUser {
@@ -1575,11 +1606,18 @@ export class WorkerAppService {
     };
   }
 
-  async recordAnalyticsEvent(input: AnalyticsEventRequest): Promise<{ accepted: true; analyticsEnabled: boolean }> {
+  async recordAnalyticsEvent(
+    input: AnalyticsEventRequest,
+    options: AnalyticsEventOptions = {},
+  ): Promise<{ accepted: true; analyticsEnabled: boolean }> {
     if (!analyticsEventNames.has(input.event)) {
       throw validationProblem({
         event: ["Analytics event is not recognized."],
       });
+    }
+
+    if (input.event === "title_detail_viewed") {
+      await this.recordUniqueBrowserTitleDetailView(input, options);
     }
 
     const authState = input.authState === "authenticated" ? "authenticated" : "anonymous";
@@ -1620,6 +1658,152 @@ export class WorkerAppService {
       accepted: true,
       analyticsEnabled: true,
     };
+  }
+
+  private async recordUniqueBrowserTitleDetailView(
+    input: AnalyticsEventRequest,
+    options: AnalyticsEventOptions,
+  ): Promise<void> {
+    const titleId = normalizeBeHomeText(
+      typeof input.metadata?.titleId === "string" ? input.metadata.titleId : null,
+      120,
+    );
+    if (!titleId) {
+      return;
+    }
+
+    const ipAddress = normalizeBeHomeText(options.ipAddress, 120);
+    const visitorId = normalizeBeHomeText(input.visitorId, 120);
+    const viewerSource: TitleDetailViewRow["viewer_source"] = ipAddress ? "ip_address" : "visitor_id";
+    const viewerIdentity = ipAddress ? `title-view-ip:${ipAddress}` : visitorId ? `title-view-visitor:${visitorId}` : null;
+    if (!viewerIdentity) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const viewerHash = await hashBeHomeDeviceId(viewerIdentity, this.context.supabaseSecretKey);
+    const countryCode = normalizeBeHomeCountryCode(options.countryCode);
+    const authState: TitleDetailViewRow["auth_state"] = input.authState === "authenticated" ? "authenticated" : "anonymous";
+    const studioSlug = normalizeAnalyticsString(input.studioSlug, 120);
+    const titleSlug = normalizeAnalyticsString(input.titleSlug, 120);
+    const surface = normalizeAnalyticsString(input.surface, 120);
+    const existing = await this.getTitleDetailView(titleId, viewerHash);
+
+    if (!existing) {
+      const { error } = await this.client.from("title_detail_views").insert({
+        title_id: titleId,
+        viewer_hash: viewerHash,
+        viewer_source: viewerSource,
+        auth_state: authState,
+        studio_slug: studioSlug,
+        title_slug: titleSlug,
+        surface,
+        app_environment: this.context.envName,
+        first_viewed_at: now,
+        last_viewed_at: now,
+        first_country_code: countryCode,
+        last_country_code: countryCode,
+      });
+      if (error) {
+        throw problem(500, "title_detail_view_record_failed", "Title analytics lookup failed.", error.message);
+      }
+
+      return;
+    }
+
+    const { error } = await this.client
+      .from("title_detail_views")
+      .update({
+        viewer_source: viewerSource,
+        auth_state: authState,
+        studio_slug: studioSlug,
+        title_slug: titleSlug,
+        surface,
+        app_environment: this.context.envName,
+        last_viewed_at: now,
+        last_country_code: countryCode,
+      })
+      .eq("title_id", titleId)
+      .eq("viewer_hash", viewerHash);
+    if (error) {
+      throw problem(500, "title_detail_view_record_failed", "Title analytics lookup failed.", error.message);
+    }
+  }
+
+  async recordBeHomeTitleDetailView(
+    input: BeHomeTitleDetailViewRequest,
+    presence: BeHomePresenceRequest | null,
+    options: { countryCode?: string | null } = {},
+  ): Promise<{ accepted: true }> {
+    const titleId = normalizeBeHomeText(input.titleId, 120);
+    if (!titleId) {
+      throw validationProblem({
+        titleId: ["Title id is required."],
+      });
+    }
+
+    const sessionId = normalizeBeHomeText(presence?.sessionId, 120);
+    const rawDeviceId = normalizeBeHomeText(presence?.deviceId, 512);
+    if (!sessionId || !rawDeviceId) {
+      throw validationProblem({
+        sessionId: ["An active BE Home session is required."],
+        deviceId: ["A BE Home device id is required."],
+      });
+    }
+
+    const now = new Date().toISOString();
+    const viewerHash = await hashBeHomeDeviceId(rawDeviceId, this.context.supabaseSecretKey);
+    const authState: TitleDetailViewRow["auth_state"] = normalizeBeHomeAuthState(presence?.authState) === "signed_in"
+      ? "authenticated"
+      : "anonymous";
+    const studioSlug = normalizeAnalyticsString(input.studioSlug, 120);
+    const titleSlug = normalizeAnalyticsString(input.titleSlug, 120);
+    const surface = normalizeAnalyticsString(input.surface, 120) ?? "title-detail";
+    const appEnvironment = normalizeBeHomeText(presence?.appEnvironment, 80) ?? this.context.envName;
+    const countryCode = normalizeBeHomeCountryCode(options.countryCode);
+    const existing = await this.getTitleDetailView(titleId, viewerHash);
+
+    if (!existing) {
+      const { error } = await this.client.from("title_detail_views").insert({
+        title_id: titleId,
+        viewer_hash: viewerHash,
+        viewer_source: "be_home_device",
+        auth_state: authState,
+        studio_slug: studioSlug,
+        title_slug: titleSlug,
+        surface,
+        app_environment: appEnvironment,
+        first_viewed_at: now,
+        last_viewed_at: now,
+        first_country_code: countryCode,
+        last_country_code: countryCode,
+      });
+      if (error) {
+        throw problem(500, "title_detail_view_record_failed", "Title analytics lookup failed.", error.message);
+      }
+
+      return { accepted: true };
+    }
+
+    const { error } = await this.client
+      .from("title_detail_views")
+      .update({
+        viewer_source: "be_home_device",
+        auth_state: authState,
+        studio_slug: studioSlug,
+        title_slug: titleSlug,
+        surface,
+        app_environment: appEnvironment,
+        last_viewed_at: now,
+        last_country_code: countryCode,
+      })
+      .eq("title_id", titleId)
+      .eq("viewer_hash", viewerHash);
+    if (error) {
+      throw problem(500, "title_detail_view_record_failed", "Title analytics lookup failed.", error.message);
+    }
+
+    return { accepted: true };
   }
 
   private async recordBeHomePresenceSession(
@@ -6388,21 +6572,29 @@ export class WorkerAppService {
   private async getTitleCollectionCounts(titleIds: string[]): Promise<Map<string, TitleCollectionCounts>> {
     const countsByTitleId = new Map<string, TitleCollectionCounts>();
     for (const titleId of titleIds) {
-      countsByTitleId.set(titleId, { wishlistCount: 0, libraryCount: 0 });
+      countsByTitleId.set(titleId, { wishlistCount: 0, libraryCount: 0, viewCount: 0 });
     }
     if (titleIds.length === 0) {
       return countsByTitleId;
     }
 
-    const [{ data: wishlistRows, error: wishlistError }, { data: libraryRows, error: libraryError }] = await Promise.all([
+    const [
+      { data: wishlistRows, error: wishlistError },
+      { data: libraryRows, error: libraryError },
+      { data: viewRows, error: viewError },
+    ] = await Promise.all([
       this.client.from("player_wishlist_titles").select("title_id").in("title_id", titleIds),
       this.client.from("player_library_titles").select("title_id").in("title_id", titleIds),
+      this.client.from("title_detail_views").select("title_id").in("title_id", titleIds),
     ]);
     if (wishlistError) {
       throw problem(500, "title_wishlist_count_lookup_failed", "Title analytics lookup failed.", wishlistError.message);
     }
     if (libraryError) {
       throw problem(500, "title_library_count_lookup_failed", "Title analytics lookup failed.", libraryError.message);
+    }
+    if (viewError) {
+      throw problem(500, "title_view_count_lookup_failed", "Title analytics lookup failed.", viewError.message);
     }
 
     for (const row of (wishlistRows as PlayerWishlistRow[] | null) ?? []) {
@@ -6416,6 +6608,13 @@ export class WorkerAppService {
       const current = countsByTitleId.get(row.title_id);
       if (current) {
         current.libraryCount += 1;
+      }
+    }
+
+    for (const row of (viewRows as Array<Pick<TitleDetailViewRow, "title_id">> | null) ?? []) {
+      const current = countsByTitleId.get(row.title_id);
+      if (current) {
+        current.viewCount = (current.viewCount ?? 0) + 1;
       }
     }
 
@@ -6941,6 +7140,20 @@ export class WorkerAppService {
     }
 
     return ((data as BeHomeDeviceIdentityRow[])[0] ?? null);
+  }
+
+  private async getTitleDetailView(titleId: string, viewerHash: string): Promise<TitleDetailViewRow | null> {
+    const { data, error } = await this.client
+      .from("title_detail_views")
+      .select("*")
+      .eq("title_id", titleId)
+      .eq("viewer_hash", viewerHash)
+      .limit(1);
+    if (error) {
+      throw problem(500, "title_detail_view_lookup_failed", "Title analytics lookup failed.", error.message);
+    }
+
+    return ((data as TitleDetailViewRow[])[0] ?? null);
   }
 
   private async listBeHomeDeviceIdentities(): Promise<BeHomeDeviceIdentityRow[]> {

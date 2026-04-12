@@ -128,6 +128,21 @@ type BeHomeDeviceIdentityRow = {
   last_device_id_source: string | null;
 };
 
+type TitleDetailViewRow = {
+  title_id: string;
+  viewer_hash: string;
+  viewer_source: "ip_address" | "visitor_id" | "be_home_device";
+  auth_state: "anonymous" | "authenticated";
+  studio_slug: string | null;
+  title_slug: string | null;
+  surface: string | null;
+  app_environment: string | null;
+  first_viewed_at: string;
+  last_viewed_at: string;
+  first_country_code: string | null;
+  last_country_code: string | null;
+};
+
 type WorkerAppServicePrivateTestAccess = {
   getDeveloperTitleDetails(userId: string, titleId: string): Promise<Record<string, unknown>>;
   getUsersByIds(userIds: string[]): Promise<AppUserRow[]>;
@@ -148,6 +163,7 @@ const tables: {
   catalog_media_entries: CatalogMediaEntryRow[];
   be_home_presence_sessions: BeHomePresenceSessionRow[];
   be_home_device_identities: BeHomeDeviceIdentityRow[];
+  title_detail_views: TitleDetailViewRow[];
 } = {
   marketing_contacts: [],
   marketing_contact_role_interests: [],
@@ -159,6 +175,7 @@ const tables: {
   catalog_media_entries: [],
   be_home_presence_sessions: [],
   be_home_device_identities: [],
+  title_detail_views: [],
 };
 
 function resetTables() {
@@ -172,6 +189,7 @@ function resetTables() {
   tables.catalog_media_entries = [];
   tables.be_home_presence_sessions = [];
   tables.be_home_device_identities = [];
+  tables.title_detail_views = [];
 }
 
 const supabaseAuthMocks = vi.hoisted(() => ({
@@ -223,6 +241,14 @@ function createQueryBuilder(tableName: keyof typeof tables) {
       return builder;
     },
     then(onFulfilled: (value: { data: Array<Record<string, unknown>>; error: null }) => unknown, onRejected?: (reason: unknown) => unknown) {
+      if (pendingUpdate) {
+        for (const row of applyFilters(tables[tableName] as Array<Record<string, unknown>>)) {
+          Object.assign(row, pendingUpdate);
+        }
+
+        pendingUpdate = null;
+      }
+
       return Promise.resolve({
         data: applyFilters(tables[tableName] as Array<Record<string, unknown>>),
         error: null,
@@ -254,14 +280,6 @@ function createQueryBuilder(tableName: keyof typeof tables) {
     },
     eq(column: string, value: unknown) {
       filters = [...filters, { column, value }];
-      if (pendingUpdate) {
-        for (const row of applyFilters(tables[tableName] as Array<Record<string, unknown>>)) {
-          Object.assign(row, pendingUpdate);
-        }
-
-        return Promise.resolve({ error: null });
-      }
-
       return builder;
     },
     in(column: string, values: unknown[]) {
@@ -1224,6 +1242,162 @@ describe("WorkerAppService.recordAnalyticsEvent", () => {
       analyticsEnabled: false,
     });
   });
+
+  it("records unique title detail views once per title and IP address", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    await service.recordAnalyticsEvent({
+      event: "title_detail_viewed",
+      path: "/browse/blue-harbor-games/lantern-drift",
+      authState: "authenticated",
+      studioSlug: "blue-harbor-games",
+      titleSlug: "lantern-drift",
+      surface: "title-detail",
+      visitorId: "visitor-1",
+      metadata: { titleId: "title-1" },
+    }, {
+      countryCode: "US",
+      ipAddress: "203.0.113.10",
+    });
+    await service.recordAnalyticsEvent({
+      event: "title_detail_viewed",
+      path: "/browse/blue-harbor-games/lantern-drift",
+      authState: "anonymous",
+      studioSlug: "blue-harbor-games",
+      titleSlug: "lantern-drift",
+      surface: "title-detail",
+      visitorId: "visitor-2",
+      metadata: { titleId: "title-1" },
+    }, {
+      countryCode: "US",
+      ipAddress: "203.0.113.10",
+    });
+    await service.recordAnalyticsEvent({
+      event: "title_detail_viewed",
+      path: "/browse/blue-harbor-games/hearthside-protocol",
+      authState: "anonymous",
+      studioSlug: "blue-harbor-games",
+      titleSlug: "hearthside-protocol",
+      surface: "title-detail",
+      visitorId: "visitor-1",
+      metadata: { titleId: "title-2" },
+    }, {
+      countryCode: "CA",
+      ipAddress: "203.0.113.10",
+    });
+
+    expect(tables.title_detail_views).toHaveLength(2);
+    expect(tables.title_detail_views[0]).toMatchObject({
+      title_id: "title-1",
+      viewer_source: "ip_address",
+      auth_state: "anonymous",
+      studio_slug: "blue-harbor-games",
+      title_slug: "lantern-drift",
+      surface: "title-detail",
+      app_environment: "staging",
+      first_country_code: "US",
+      last_country_code: "US",
+    });
+    expect(tables.title_detail_views[1]).toMatchObject({
+      title_id: "title-2",
+      viewer_source: "ip_address",
+      title_slug: "hearthside-protocol",
+      last_country_code: "CA",
+    });
+    expect(tables.title_detail_views[0]!.viewer_hash).not.toBe("203.0.113.10");
+  });
+
+  it("records unique BE Home title detail views once per title and Board device", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    await service.recordBeHomeTitleDetailView(
+      {
+        titleId: "title-1",
+        studioSlug: "blue-harbor-games",
+        titleSlug: "lantern-drift",
+        surface: "title-detail",
+      },
+      {
+        sessionId: "be-home-session-1",
+        deviceId: "board-install-1",
+        deviceIdSource: "install_id",
+        authState: "anonymous",
+        clientVersion: "1.2.3",
+        appEnvironment: "staging",
+      },
+      {
+        countryCode: "US",
+      },
+    );
+    await service.recordBeHomeTitleDetailView(
+      {
+        titleId: "title-1",
+        studioSlug: "blue-harbor-games",
+        titleSlug: "lantern-drift",
+        surface: "title-detail",
+      },
+      {
+        sessionId: "be-home-session-2",
+        deviceId: "board-install-1",
+        deviceIdSource: "install_id",
+        authState: "signed_in",
+        clientVersion: "1.2.3",
+        appEnvironment: "staging",
+      },
+      {
+        countryCode: "CA",
+      },
+    );
+    await service.recordBeHomeTitleDetailView(
+      {
+        titleId: "title-2",
+        studioSlug: "blue-harbor-games",
+        titleSlug: "hearthside-protocol",
+        surface: "title-detail",
+      },
+      {
+        sessionId: "be-home-session-3",
+        deviceId: "board-install-1",
+        deviceIdSource: "install_id",
+        authState: "signed_in",
+        clientVersion: "1.2.3",
+        appEnvironment: "staging",
+      },
+      {
+        countryCode: "CA",
+      },
+    );
+
+    expect(tables.title_detail_views).toHaveLength(2);
+    expect(tables.title_detail_views[0]).toMatchObject({
+      title_id: "title-1",
+      viewer_source: "be_home_device",
+      auth_state: "authenticated",
+      studio_slug: "blue-harbor-games",
+      title_slug: "lantern-drift",
+      surface: "title-detail",
+      app_environment: "staging",
+      first_country_code: "US",
+      last_country_code: "CA",
+    });
+    expect(tables.title_detail_views[1]).toMatchObject({
+      title_id: "title-2",
+      viewer_source: "be_home_device",
+      title_slug: "hearthside-protocol",
+      last_country_code: "CA",
+    });
+    expect(tables.title_detail_views[0]!.viewer_hash).not.toBe("board-install-1");
+  });
 });
 
 describe("WorkerAppService.verifyCurrentUserPassword", () => {
@@ -1436,7 +1610,7 @@ describe("WorkerAppService title analytics projections", () => {
       created_at: "2026-03-08T12:00:00Z",
       updated_at: "2026-03-08T12:00:00Z",
     }]]));
-    vi.spyOn(service as never, "getTitleCollectionCounts" as never).mockResolvedValue(new Map([["title-1", { wishlistCount: 24, libraryCount: 9 }]]));
+    vi.spyOn(service as never, "getTitleCollectionCounts" as never).mockResolvedValue(new Map([["title-1", { wishlistCount: 24, libraryCount: 9, viewCount: 41 }]]));
 
     await expect(service.getCatalogTitle(null, "blue-harbor-games", "lantern-drift")).resolves.toEqual(
       expect.objectContaining({
@@ -1444,6 +1618,7 @@ describe("WorkerAppService title analytics projections", () => {
           id: "title-1",
           maxPlayersOrMore: true,
           playerCountDisplay: "1-4+ players",
+          viewCount: 41,
           wishlistCount: 24,
           libraryCount: 9,
         }),
@@ -1590,13 +1765,14 @@ describe("WorkerAppService title analytics projections", () => {
       created_at: "2026-03-08T12:00:00Z",
       updated_at: "2026-03-08T12:00:00Z",
     });
-    vi.spyOn(service as never, "getTitleCollectionCounts" as never).mockResolvedValue(new Map([["title-1", { wishlistCount: 18, libraryCount: 7 }]]));
+    vi.spyOn(service as never, "getTitleCollectionCounts" as never).mockResolvedValue(new Map([["title-1", { wishlistCount: 18, libraryCount: 7, viewCount: 63 }]]));
 
     await expect(serviceAccess.getDeveloperTitleDetails("user-1", "title-1")).resolves.toEqual(
       expect.objectContaining({
         id: "title-1",
         maxPlayersOrMore: true,
         playerCountDisplay: "1-4+ players",
+        viewCount: 63,
         wishlistCount: 18,
         libraryCount: 7,
       }),

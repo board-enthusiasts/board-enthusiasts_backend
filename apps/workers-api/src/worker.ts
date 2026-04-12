@@ -6,6 +6,7 @@ import {
   type AnalyticsEventRequest,
   type BeHomePresenceEndRequest,
   type BeHomePresenceRequest,
+  type BeHomeTitleDetailViewRequest,
   type BeWebsitePresenceRequest,
   type WorkerAppContext,
 } from "./service-boundary";
@@ -181,7 +182,10 @@ export async function handleAnalyticsEventRoute(
   responseHeaders: HeadersInit
 ): Promise<Response> {
   assertAllowedSupportIssueOrigin(request, service.getContext());
-  return json(await service.recordAnalyticsEvent(await readJson<AnalyticsEventRequest>(request)), {
+  return json(await service.recordAnalyticsEvent(await readJson<AnalyticsEventRequest>(request), {
+    countryCode: readCfCountryCode(request),
+    ipAddress: readCfClientIp(request),
+  }), {
     status: 202,
     headers: responseHeaders,
   });
@@ -308,6 +312,26 @@ export async function handleBeHomePresenceEndRoute(
   });
 }
 
+export async function handleBeHomeTitleDetailViewRoute(
+  request: Request,
+  service: Pick<WorkerAppService, "recordBeHomeTitleDetailView">,
+  responseHeaders: HeadersInit,
+): Promise<Response> {
+  return json(
+    await service.recordBeHomeTitleDetailView(
+      await readJson<BeHomeTitleDetailViewRequest>(request),
+      readPassiveBeHomePresence(request),
+      {
+        countryCode: readCfCountryCode(request),
+      },
+    ),
+    {
+      status: 202,
+      headers: responseHeaders,
+    },
+  );
+}
+
 export async function handleBeHomeMetricsRoute(
   _request: Request,
   service: Pick<WorkerAppService, "getBeHomeMetrics">,
@@ -411,6 +435,10 @@ export default {
         const response = await handleBeHomePresenceEndRoute(request, service, responseHeaders);
         invalidateBeCommunityMetricsCache();
         return response;
+      }
+
+      if (request.method === "POST" && url.pathname === "/internal/be-home/title-detail-views") {
+        return handleBeHomeTitleDetailViewRoute(request, service, responseHeaders);
       }
 
       if (request.method === "GET" && url.pathname === "/internal/be-home/metrics") {
