@@ -752,6 +752,7 @@ describe("worker public identifier routes", () => {
   });
 
   it("routes BE Home title detail view requests to the internal title analytics service", async () => {
+    const touchBeHomePresenceSession = vi.spyOn(WorkerAppService.prototype, "touchBeHomePresenceSession").mockResolvedValue();
     const recordBeHomeTitleDetailView = vi.spyOn(WorkerAppService.prototype, "recordBeHomeTitleDetailView").mockResolvedValue({
       accepted: true,
     });
@@ -782,6 +783,17 @@ describe("worker public identifier routes", () => {
     const response = await worker.fetch(request, minimalEnv);
 
     expect(response.status).toBe(202);
+    expect(touchBeHomePresenceSession).toHaveBeenCalledWith(
+      {
+        sessionId: "be-home-session-123",
+        deviceId: "install-id-123",
+        deviceIdSource: "install_id",
+        authState: "signed_in",
+        clientVersion: "1.2.3",
+        appEnvironment: "production",
+      },
+      { countryCode: "CA" },
+    );
     expect(recordBeHomeTitleDetailView).toHaveBeenCalledWith(
       {
         titleId: "title-1",
