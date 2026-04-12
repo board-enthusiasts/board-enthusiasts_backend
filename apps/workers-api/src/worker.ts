@@ -193,6 +193,41 @@ function readCfClientIp(request: Request): string | null {
   return forwardedFor || null;
 }
 
+function readPassiveBeWebsitePresence(request: Request): BeWebsitePresenceRequest | null {
+  const sessionId = request.headers.get("x-be-website-session-id")?.trim() ?? "";
+  if (!sessionId) {
+    return null;
+  }
+
+  const authStateHeader = request.headers.get("x-be-website-auth-state");
+
+  return {
+    sessionId,
+    authState: authStateHeader === "signed_in" ? "signed_in" : authStateHeader === "anonymous" ? "anonymous" : null,
+    pagePath: request.headers.get("x-be-page-path"),
+    appEnvironment: request.headers.get("x-be-app-environment"),
+  };
+}
+
+function readPassiveBeHomePresence(request: Request): BeHomePresenceRequest | null {
+  const sessionId = request.headers.get("x-be-home-session-id")?.trim() ?? "";
+  const deviceId = request.headers.get("x-be-home-device-id");
+  if (!sessionId || !deviceId?.trim()) {
+    return null;
+  }
+
+  const authStateHeader = request.headers.get("x-be-home-auth-state");
+
+  return {
+    sessionId,
+    deviceId,
+    deviceIdSource: request.headers.get("x-be-home-device-id-source"),
+    authState: authStateHeader === "signed_in" ? "signed_in" : authStateHeader === "anonymous" ? "anonymous" : null,
+    clientVersion: request.headers.get("x-be-home-client-version"),
+    appEnvironment: request.headers.get("x-be-home-app-environment"),
+  };
+}
+
 export async function handleBeHomePresenceRoute(
   request: Request,
   service: Pick<WorkerAppService, "upsertBeHomePresenceSession">,
@@ -257,6 +292,29 @@ export default {
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: responseHeaders });
+    }
+
+    const passiveBeHomePresence = readPassiveBeHomePresence(request);
+    if (passiveBeHomePresence) {
+      try {
+        await service.touchBeHomePresenceSession(passiveBeHomePresence, {
+          countryCode: readCfCountryCode(request),
+        });
+      } catch {
+        // Presence is best-effort and must not block the requested API work.
+      }
+    }
+
+    const passiveWebsitePresence = readPassiveBeWebsitePresence(request);
+    if (passiveWebsitePresence) {
+      try {
+        await service.touchBeWebsitePresenceSession(passiveWebsitePresence, {
+          countryCode: readCfCountryCode(request),
+          ipAddress: readCfClientIp(request),
+        });
+      } catch {
+        // Presence is best-effort and must not block the requested API work.
+      }
     }
 
     try {

@@ -622,8 +622,10 @@ const analyticsEventNames = new Set([
 
 const beHomeHeartbeatIntervalSeconds = 60;
 const beHomeActiveTtlSeconds = 180;
-const beWebsiteHeartbeatIntervalSeconds = 30;
-const beWebsiteActiveTtlSeconds = 600;
+const beHomePresenceWriteThrottleSeconds = 60;
+const beWebsiteHeartbeatIntervalSeconds = 300;
+const beWebsiteActiveTtlSeconds = 900;
+const beWebsitePresenceWriteThrottleSeconds = 60;
 
 function normalizeAnalyticsString(value: string | null | undefined, maxLength: number): string | null {
   const trimmed = value?.trim() ?? "";
@@ -1620,18 +1622,13 @@ export class WorkerAppService {
     };
   }
 
-  async upsertBeHomePresenceSession(
+  private async recordBeHomePresenceSession(
     input: BeHomePresenceRequest,
     options: { countryCode?: string | null } = {},
   ): Promise<{
-    accepted: true;
-    session: {
-      sessionId: string;
-      authState: "anonymous" | "signed_in";
-      lastSeenAt: string;
-      heartbeatIntervalSeconds: number;
-      activeTtlSeconds: number;
-    };
+    sessionId: string;
+    authState: "anonymous" | "signed_in";
+    lastSeenAt: string;
   }> {
     const sessionId = normalizeBeHomeText(input.sessionId, 120);
     const rawDeviceId = normalizeBeHomeText(input.deviceId, 512);
@@ -1656,6 +1653,22 @@ export class WorkerAppService {
     const now = new Date().toISOString();
     const deviceIdHash = await hashBeHomeDeviceId(rawDeviceId, this.context.supabaseSecretKey);
     const existingSession = await this.getBeHomePresenceSession(sessionId);
+    const throttleThresholdTime = Date.now() - (beHomePresenceWriteThrottleSeconds * 1000);
+
+    if (
+      existingSession &&
+      existingSession.surface === "be_home" &&
+      !existingSession.ended_at &&
+      existingSession.auth_state === authState &&
+      existingSession.device_id_hash === deviceIdHash &&
+      Date.parse(existingSession.last_seen_at) >= throttleThresholdTime
+    ) {
+      return {
+        sessionId,
+        authState,
+        lastSeenAt: existingSession.last_seen_at,
+      };
+    }
 
     await this.upsertBeHomeDeviceIdentity({
       deviceIdHash,
@@ -1688,20 +1701,22 @@ export class WorkerAppService {
     }
 
     return {
-      accepted: true,
-      session: {
-        sessionId,
-        authState,
-        lastSeenAt: now,
-        heartbeatIntervalSeconds: beHomeHeartbeatIntervalSeconds,
-        activeTtlSeconds: beHomeActiveTtlSeconds,
-      },
+      sessionId,
+      authState,
+      lastSeenAt: now,
     };
   }
 
-  async upsertBeWebsitePresenceSession(
-    input: BeWebsitePresenceRequest,
-    options: { countryCode?: string | null; ipAddress?: string | null } = {},
+  async touchBeHomePresenceSession(
+    input: BeHomePresenceRequest,
+    options: { countryCode?: string | null } = {},
+  ): Promise<void> {
+    await this.recordBeHomePresenceSession(input, options);
+  }
+
+  async upsertBeHomePresenceSession(
+    input: BeHomePresenceRequest,
+    options: { countryCode?: string | null } = {},
   ): Promise<{
     accepted: true;
     session: {
@@ -1711,6 +1726,28 @@ export class WorkerAppService {
       heartbeatIntervalSeconds: number;
       activeTtlSeconds: number;
     };
+  }> {
+    const session = await this.recordBeHomePresenceSession(input, options);
+
+    return {
+      accepted: true,
+      session: {
+        sessionId: session.sessionId,
+        authState: session.authState,
+        lastSeenAt: session.lastSeenAt,
+        heartbeatIntervalSeconds: beHomeHeartbeatIntervalSeconds,
+        activeTtlSeconds: beHomeActiveTtlSeconds,
+      },
+    };
+  }
+
+  private async recordBeWebsitePresenceSession(
+    input: BeWebsitePresenceRequest,
+    options: { countryCode?: string | null; ipAddress?: string | null } = {},
+  ): Promise<{
+    sessionId: string;
+    authState: "anonymous" | "signed_in";
+    lastSeenAt: string;
   }> {
     const sessionId = normalizeBeHomeText(input.sessionId, 120);
     const authState = normalizeBeHomeAuthState(input.authState);
@@ -1730,6 +1767,21 @@ export class WorkerAppService {
     const deviceIdHash = await hashBeHomeDeviceId(browserIdentity, this.context.supabaseSecretKey);
     const existingSession = await this.getBeHomePresenceSession(sessionId);
     const deviceIdSource = ipAddress ? "website_ip" : "website_session";
+    const throttleThresholdTime = Date.now() - (beWebsitePresenceWriteThrottleSeconds * 1000);
+
+    if (
+      existingSession &&
+      existingSession.surface === "be_website" &&
+      !existingSession.ended_at &&
+      existingSession.auth_state === authState &&
+      Date.parse(existingSession.last_seen_at) >= throttleThresholdTime
+    ) {
+      return {
+        sessionId,
+        authState,
+        lastSeenAt: existingSession.last_seen_at,
+      };
+    }
 
     await this.upsertBeHomeDeviceIdentity({
       deviceIdHash,
@@ -1762,14 +1814,60 @@ export class WorkerAppService {
     }
 
     return {
+      sessionId,
+      authState,
+      lastSeenAt: now,
+    };
+  }
+
+  async touchBeWebsitePresenceSession(
+    input: BeWebsitePresenceRequest,
+    options: { countryCode?: string | null; ipAddress?: string | null } = {},
+  ): Promise<void> {
+    await this.recordBeWebsitePresenceSession(input, options);
+  }
+
+  async upsertBeWebsitePresenceSession(
+    input: BeWebsitePresenceRequest,
+    options: { countryCode?: string | null; ipAddress?: string | null } = {},
+  ): Promise<{
+    accepted: true;
+    session: {
+      sessionId: string;
+      authState: "anonymous" | "signed_in";
+      lastSeenAt: string;
+      heartbeatIntervalSeconds: number;
+      activeTtlSeconds: number;
+    };
+    metrics: {
+      activeNowTotal: number;
+      activeNowAnonymous: number;
+      activeNowSignedIn: number;
+      websiteActiveNowTotal: number;
+      websiteActiveNowAnonymous: number;
+      websiteActiveNowSignedIn: number;
+      communityActiveNowTotal: number;
+      totalBoardsSeen: number;
+      dailyActiveDevices: number;
+      weeklyActiveDevices: number;
+      monthlyActiveDevices: number;
+      updatedAt: string;
+    };
+  }> {
+    const session = await this.recordBeWebsitePresenceSession(input, options);
+
+    const metrics = (await this.getBeHomeMetrics()).metrics;
+
+    return {
       accepted: true,
       session: {
-        sessionId,
-        authState,
-        lastSeenAt: now,
+        sessionId: session.sessionId,
+        authState: session.authState,
+        lastSeenAt: session.lastSeenAt,
         heartbeatIntervalSeconds: beWebsiteHeartbeatIntervalSeconds,
         activeTtlSeconds: beWebsiteActiveTtlSeconds,
       },
+      metrics,
     };
   }
 

@@ -507,8 +507,22 @@ describe("BE Home internal presence routes", () => {
           sessionId: "website-session-1",
           authState: "anonymous",
           lastSeenAt: "2026-04-10T15:00:00.000Z",
-          heartbeatIntervalSeconds: 30,
-          activeTtlSeconds: 600,
+          heartbeatIntervalSeconds: 300,
+          activeTtlSeconds: 900,
+        },
+        metrics: {
+          activeNowTotal: 1,
+          activeNowAnonymous: 1,
+          activeNowSignedIn: 0,
+          websiteActiveNowTotal: 1,
+          websiteActiveNowAnonymous: 1,
+          websiteActiveNowSignedIn: 0,
+          communityActiveNowTotal: 2,
+          totalBoardsSeen: 1,
+          dailyActiveDevices: 1,
+          weeklyActiveDevices: 1,
+          monthlyActiveDevices: 1,
+          updatedAt: "2026-04-10T15:00:00.000Z",
         },
       }),
     };
@@ -674,6 +688,103 @@ describe("worker public identifier routes", () => {
     expect(getBeHomeMetrics).toHaveBeenCalledOnce();
   });
 
+  it("passively records BE Home presence from normal API traffic", async () => {
+    const touchBeHomePresenceSession = vi.spyOn(WorkerAppService.prototype, "touchBeHomePresenceSession").mockResolvedValue();
+    const getBeHomeMetrics = vi.spyOn(WorkerAppService.prototype, "getBeHomeMetrics").mockResolvedValue({
+      metrics: {
+        activeNowTotal: 2,
+        activeNowAnonymous: 1,
+        activeNowSignedIn: 1,
+        websiteActiveNowTotal: 3,
+        websiteActiveNowAnonymous: 2,
+        websiteActiveNowSignedIn: 1,
+        communityActiveNowTotal: 5,
+        totalBoardsSeen: 11,
+        dailyActiveDevices: 5,
+        weeklyActiveDevices: 7,
+        monthlyActiveDevices: 10,
+        updatedAt: "2026-04-10T15:03:00.000Z",
+      },
+    });
+
+    const request = new Request("http://example.test/internal/be-home/metrics", {
+      headers: {
+        "x-be-home-session-id": "be-home-session-123",
+        "x-be-home-device-id": "install-id-123",
+        "x-be-home-device-id-source": "install_id",
+        "x-be-home-auth-state": "signed_in",
+        "x-be-home-client-version": "1.2.3",
+        "x-be-home-app-environment": "production",
+      },
+    });
+    Object.defineProperty(request, "cf", {
+      value: { country: "CA" },
+      configurable: true,
+    });
+
+    const response = await worker.fetch(request, minimalEnv);
+
+    expect(response.status).toBe(200);
+    expect(touchBeHomePresenceSession).toHaveBeenCalledWith(
+      {
+        sessionId: "be-home-session-123",
+        deviceId: "install-id-123",
+        deviceIdSource: "install_id",
+        authState: "signed_in",
+        clientVersion: "1.2.3",
+        appEnvironment: "production",
+      },
+      { countryCode: "CA" },
+    );
+    expect(getBeHomeMetrics).toHaveBeenCalledOnce();
+  });
+
+  it("passively records website presence from normal API traffic", async () => {
+    const touchBeWebsitePresenceSession = vi.spyOn(WorkerAppService.prototype, "touchBeWebsitePresenceSession").mockResolvedValue();
+    const getBeHomeMetrics = vi.spyOn(WorkerAppService.prototype, "getBeHomeMetrics").mockResolvedValue({
+      metrics: {
+        activeNowTotal: 2,
+        activeNowAnonymous: 1,
+        activeNowSignedIn: 1,
+        websiteActiveNowTotal: 3,
+        websiteActiveNowAnonymous: 2,
+        websiteActiveNowSignedIn: 1,
+        communityActiveNowTotal: 5,
+        totalBoardsSeen: 11,
+        dailyActiveDevices: 5,
+        weeklyActiveDevices: 7,
+        monthlyActiveDevices: 10,
+        updatedAt: "2026-04-10T15:03:00.000Z",
+      },
+    });
+
+    const request = new Request("http://example.test/internal/be-home/metrics", {
+      headers: {
+        "x-be-website-session-id": "website-session-123",
+        "x-be-website-auth-state": "anonymous",
+        "x-be-page-path": "/browse?sort=featured",
+      },
+    });
+    Object.defineProperty(request, "cf", {
+      value: { country: "CA" },
+      configurable: true,
+    });
+
+    const response = await worker.fetch(request, minimalEnv);
+
+    expect(response.status).toBe(200);
+    expect(touchBeWebsitePresenceSession).toHaveBeenCalledWith(
+      {
+        sessionId: "website-session-123",
+        authState: "anonymous",
+        pagePath: "/browse?sort=featured",
+        appEnvironment: null,
+      },
+      { countryCode: "CA", ipAddress: null },
+    );
+    expect(getBeHomeMetrics).toHaveBeenCalledOnce();
+  });
+
   it("routes BE website presence heartbeats to the internal presence service", async () => {
     const upsertBeWebsitePresenceSession = vi.spyOn(WorkerAppService.prototype, "upsertBeWebsitePresenceSession").mockResolvedValue({
       accepted: true,
@@ -681,8 +792,22 @@ describe("worker public identifier routes", () => {
         sessionId: "website-session-123",
         authState: "anonymous",
         lastSeenAt: "2026-04-10T15:00:00.000Z",
-        heartbeatIntervalSeconds: 30,
-        activeTtlSeconds: 600,
+        heartbeatIntervalSeconds: 300,
+        activeTtlSeconds: 900,
+      },
+      metrics: {
+        activeNowTotal: 1,
+        activeNowAnonymous: 1,
+        activeNowSignedIn: 0,
+        websiteActiveNowTotal: 1,
+        websiteActiveNowAnonymous: 1,
+        websiteActiveNowSignedIn: 0,
+        communityActiveNowTotal: 2,
+        totalBoardsSeen: 1,
+        dailyActiveDevices: 1,
+        weeklyActiveDevices: 1,
+        monthlyActiveDevices: 1,
+        updatedAt: "2026-04-10T15:00:00.000Z",
       },
     });
 

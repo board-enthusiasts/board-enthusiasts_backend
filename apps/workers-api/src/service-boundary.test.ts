@@ -2814,8 +2814,22 @@ describe("WorkerAppService BE Home presence", () => {
         sessionId: "website-session-1",
         authState: "anonymous",
         lastSeenAt: expect.any(String),
-        heartbeatIntervalSeconds: 30,
-        activeTtlSeconds: 600,
+        heartbeatIntervalSeconds: 300,
+        activeTtlSeconds: 900,
+      },
+      metrics: {
+        activeNowTotal: 1,
+        activeNowAnonymous: 0,
+        activeNowSignedIn: 1,
+        websiteActiveNowTotal: 1,
+        websiteActiveNowAnonymous: 1,
+        websiteActiveNowSignedIn: 0,
+        communityActiveNowTotal: 2,
+        totalBoardsSeen: 1,
+        dailyActiveDevices: 1,
+        weeklyActiveDevices: 1,
+        monthlyActiveDevices: 1,
+        updatedAt: expect.any(String),
       },
     });
     expect(tables.be_home_presence_sessions).toHaveLength(3);
@@ -2850,6 +2864,78 @@ describe("WorkerAppService BE Home presence", () => {
         updatedAt: expect.any(String),
       },
     });
+  });
+
+  it("throttles passive BE Home presence writes for the same session", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    await service.touchBeHomePresenceSession({
+      sessionId: "session-1",
+      deviceId: "raw-device-1",
+      authState: "anonymous",
+      deviceIdSource: "install_id",
+      clientVersion: "1.0.0",
+      appEnvironment: "production",
+    });
+
+    const firstLastSeenAt = tables.be_home_presence_sessions[0]!.last_seen_at;
+    const firstClientVersion = tables.be_home_device_identities[0]!.last_client_version;
+
+    await service.touchBeHomePresenceSession({
+      sessionId: "session-1",
+      deviceId: "raw-device-1",
+      authState: "anonymous",
+      deviceIdSource: "install_id",
+      clientVersion: "1.1.0",
+      appEnvironment: "production",
+    });
+
+    expect(tables.be_home_presence_sessions).toHaveLength(1);
+    expect(tables.be_home_device_identities).toHaveLength(1);
+    expect(tables.be_home_presence_sessions[0]!.last_seen_at).toBe(firstLastSeenAt);
+    expect(tables.be_home_device_identities[0]!.last_client_version).toBe(firstClientVersion);
+  });
+
+  it("throttles passive website presence writes for the same session", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    await service.touchBeWebsitePresenceSession(
+      {
+        sessionId: "website-session-1",
+        authState: "anonymous",
+        pagePath: "/browse",
+        appEnvironment: "production",
+      },
+      { countryCode: "US", ipAddress: "203.0.113.10" },
+    );
+
+    const firstLastSeenAt = tables.be_home_presence_sessions[0]!.last_seen_at;
+    const firstClientVersion = tables.be_home_device_identities[0]!.last_client_version;
+
+    await service.touchBeWebsitePresenceSession(
+      {
+        sessionId: "website-session-1",
+        authState: "anonymous",
+        pagePath: "/offerings",
+        appEnvironment: "production",
+      },
+      { countryCode: "US", ipAddress: "203.0.113.10" },
+    );
+
+    expect(tables.be_home_presence_sessions).toHaveLength(1);
+    expect(tables.be_home_device_identities).toHaveLength(1);
+    expect(tables.be_home_presence_sessions[0]!.last_seen_at).toBe(firstLastSeenAt);
+    expect(tables.be_home_device_identities[0]!.last_client_version).toBe(firstClientVersion);
   });
 
   it("excludes stale and ended sessions from active metrics", async () => {
