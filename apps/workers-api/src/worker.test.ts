@@ -688,6 +688,39 @@ describe("worker public identifier routes", () => {
     expect(getBeHomeMetrics).toHaveBeenCalledOnce();
   });
 
+  it("attaches community metrics headers only when explicitly requested", async () => {
+    vi.spyOn(WorkerAppService.prototype, "getBeHomeMetrics").mockResolvedValue({
+      metrics: {
+        activeNowTotal: 2,
+        activeNowAnonymous: 1,
+        activeNowSignedIn: 1,
+        websiteActiveNowTotal: 3,
+        websiteActiveNowAnonymous: 2,
+        websiteActiveNowSignedIn: 1,
+        communityActiveNowTotal: 5,
+        totalBoardsSeen: 11,
+        dailyActiveDevices: 5,
+        weeklyActiveDevices: 7,
+        monthlyActiveDevices: 10,
+        updatedAt: "2026-04-10T15:03:00.000Z",
+      },
+    });
+
+    const optedInResponse = await worker.fetch(
+      new Request("http://example.test/health/live", {
+        headers: {
+          "x-be-accept-community-metrics": "1",
+        },
+      }),
+      minimalEnv,
+    );
+    const defaultResponse = await worker.fetch(new Request("http://example.test/health/live"), minimalEnv);
+
+    expect(optedInResponse.headers.get("x-be-community-active-now-total")).toBe("5");
+    expect(optedInResponse.headers.get("access-control-expose-headers")).toContain("x-be-community-active-now-total");
+    expect(defaultResponse.headers.get("x-be-community-active-now-total")).toBeNull();
+  });
+
   it("passively records BE Home presence from normal API traffic", async () => {
     const touchBeHomePresenceSession = vi.spyOn(WorkerAppService.prototype, "touchBeHomePresenceSession").mockResolvedValue();
     const getBeHomeMetrics = vi.spyOn(WorkerAppService.prototype, "getBeHomeMetrics").mockResolvedValue({

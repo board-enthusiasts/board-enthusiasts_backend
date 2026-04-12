@@ -16,6 +16,16 @@ const localMarketingOrigins = [
   "http://localhost:4173",
   "http://127.0.0.1:4173"
 ];
+const beCommunityMetricsCacheMs = 5_000;
+
+type BeCommunityMetrics = Awaited<ReturnType<WorkerAppService["getBeHomeMetrics"]>>["metrics"];
+
+let cachedBeCommunityMetrics:
+  | {
+      metrics: BeCommunityMetrics;
+      expiresAt: number;
+    }
+  | null = null;
 
 interface SupportIssueReportRequest {
   category: "email_signup" | "be_home_contact";
@@ -228,6 +238,32 @@ function readPassiveBeHomePresence(request: Request): BeHomePresenceRequest | nu
   };
 }
 
+function requestWantsBeCommunityMetrics(request: Request): boolean {
+  return request.headers.get("x-be-accept-community-metrics")?.trim() === "1";
+}
+
+function invalidateBeCommunityMetricsCache(): void {
+  cachedBeCommunityMetrics = null;
+}
+
+async function getBeCommunityMetrics(service: Pick<WorkerAppService, "getBeHomeMetrics">): Promise<BeCommunityMetrics | null> {
+  const now = Date.now();
+  if (cachedBeCommunityMetrics && cachedBeCommunityMetrics.expiresAt > now) {
+    return cachedBeCommunityMetrics.metrics;
+  }
+
+  try {
+    const metrics = (await service.getBeHomeMetrics()).metrics;
+    cachedBeCommunityMetrics = {
+      metrics,
+      expiresAt: now + beCommunityMetricsCacheMs,
+    };
+    return metrics;
+  } catch {
+    return cachedBeCommunityMetrics?.metrics ?? null;
+  }
+}
+
 export async function handleBeHomePresenceRoute(
   request: Request,
   service: Pick<WorkerAppService, "upsertBeHomePresenceSession">,
@@ -288,14 +324,8 @@ export default {
     const service = new WorkerAppService(env);
     const url = new URL(request.url);
     const token = getBearerToken(request);
-    const responseHeaders = corsHeaders(
-      request.headers.get("origin"),
-      request.headers.get("access-control-request-headers"),
-    );
-
-    if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: responseHeaders });
-    }
+    let presenceStateMutated = false;
+    const includeCommunityMetrics = requestWantsBeCommunityMetrics(request);
 
     const passiveBeHomePresence = readPassiveBeHomePresence(request);
     if (passiveBeHomePresence) {
@@ -303,6 +333,7 @@ export default {
         await service.touchBeHomePresenceSession(passiveBeHomePresence, {
           countryCode: readCfCountryCode(request),
         });
+        presenceStateMutated = true;
       } catch {
         // Presence is best-effort and must not block the requested API work.
       }
@@ -315,9 +346,24 @@ export default {
           countryCode: readCfCountryCode(request),
           ipAddress: readCfClientIp(request),
         });
+        presenceStateMutated = true;
       } catch {
         // Presence is best-effort and must not block the requested API work.
       }
+    }
+
+    if (presenceStateMutated) {
+      invalidateBeCommunityMetricsCache();
+    }
+
+    const responseHeaders = corsHeaders(
+      request.headers.get("origin"),
+      request.headers.get("access-control-request-headers"),
+      includeCommunityMetrics ? await getBeCommunityMetrics(service) : null,
+    );
+
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: responseHeaders });
     }
 
     try {
@@ -350,15 +396,21 @@ export default {
       }
 
       if (request.method === "POST" && url.pathname === "/internal/be-home/presence") {
-        return handleBeHomePresenceRoute(request, service, responseHeaders);
+        const response = await handleBeHomePresenceRoute(request, service, responseHeaders);
+        invalidateBeCommunityMetricsCache();
+        return response;
       }
 
       if (request.method === "POST" && url.pathname === "/internal/be-home/website-presence") {
-        return handleBeWebsitePresenceRoute(request, service, responseHeaders);
+        const response = await handleBeWebsitePresenceRoute(request, service, responseHeaders);
+        invalidateBeCommunityMetricsCache();
+        return response;
       }
 
       if (request.method === "POST" && url.pathname === "/internal/be-home/presence/end") {
-        return handleBeHomePresenceEndRoute(request, service, responseHeaders);
+        const response = await handleBeHomePresenceEndRoute(request, service, responseHeaders);
+        invalidateBeCommunityMetricsCache();
+        return response;
       }
 
       if (request.method === "GET" && url.pathname === "/internal/be-home/metrics") {
