@@ -2866,6 +2866,62 @@ describe("WorkerAppService BE Home presence", () => {
     });
   });
 
+  it("keeps a website session signed in after later anonymous passive updates until sign-out resets the session", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    await service.touchBeWebsitePresenceSession(
+      {
+        sessionId: "website-session-1",
+        authState: "signed_in",
+        pagePath: "/player",
+        appEnvironment: "production",
+      },
+      { countryCode: "US", ipAddress: "203.0.113.10" },
+    );
+
+    tables.be_home_presence_sessions[0]!.last_seen_at = new Date(Date.now() - 61_000).toISOString();
+
+    await service.touchBeWebsitePresenceSession(
+      {
+        sessionId: "website-session-1",
+        authState: "anonymous",
+        pagePath: "/browse",
+        appEnvironment: "production",
+      },
+      { countryCode: "US", ipAddress: "203.0.113.10" },
+    );
+
+    expect(tables.be_home_presence_sessions).toHaveLength(1);
+    expect(tables.be_home_presence_sessions[0]).toMatchObject({
+      session_id: "website-session-1",
+      auth_state: "signed_in",
+      client_version: "/browse",
+      surface: "be_website",
+    });
+
+    await expect(service.getBeHomeMetrics()).resolves.toEqual({
+      metrics: {
+        activeNowTotal: 0,
+        activeNowAnonymous: 0,
+        activeNowSignedIn: 0,
+        websiteActiveNowTotal: 1,
+        websiteActiveNowAnonymous: 0,
+        websiteActiveNowSignedIn: 1,
+        communityActiveNowTotal: 1,
+        totalBoardsSeen: 0,
+        dailyActiveDevices: 0,
+        weeklyActiveDevices: 0,
+        monthlyActiveDevices: 0,
+        updatedAt: expect.any(String),
+      },
+    });
+  });
+
   it("throttles passive BE Home presence writes for the same session", async () => {
     const service = new WorkerAppService({
       APP_ENV: "production",

@@ -1766,6 +1766,14 @@ export class WorkerAppService {
     const browserIdentity = ipAddress ? `be-website-ip:${ipAddress}` : `be-website-session:${sessionId}`;
     const deviceIdHash = await hashBeHomeDeviceId(browserIdentity, this.context.supabaseSecretKey);
     const existingSession = await this.getBeHomePresenceSession(sessionId);
+    const effectiveAuthState =
+      existingSession &&
+      existingSession.surface === "be_website" &&
+      !existingSession.ended_at &&
+      existingSession.auth_state === "signed_in" &&
+      authState === "anonymous"
+        ? "signed_in"
+        : authState;
     const deviceIdSource = ipAddress ? "website_ip" : "website_session";
     const throttleThresholdTime = Date.now() - (beWebsitePresenceWriteThrottleSeconds * 1000);
 
@@ -1773,12 +1781,12 @@ export class WorkerAppService {
       existingSession &&
       existingSession.surface === "be_website" &&
       !existingSession.ended_at &&
-      existingSession.auth_state === authState &&
+      existingSession.auth_state === effectiveAuthState &&
       Date.parse(existingSession.last_seen_at) >= throttleThresholdTime
     ) {
       return {
         sessionId,
-        authState,
+        authState: effectiveAuthState,
         lastSeenAt: existingSession.last_seen_at,
       };
     }
@@ -1797,7 +1805,7 @@ export class WorkerAppService {
         {
           session_id: sessionId,
           device_id_hash: deviceIdHash,
-          auth_state: authState,
+          auth_state: effectiveAuthState,
           surface: "be_website",
           started_at: existingSession?.started_at ?? now,
           last_seen_at: now,
@@ -1815,7 +1823,7 @@ export class WorkerAppService {
 
     return {
       sessionId,
-      authState,
+      authState: effectiveAuthState,
       lastSeenAt: now,
     };
   }
