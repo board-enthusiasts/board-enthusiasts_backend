@@ -288,7 +288,10 @@ export default {
     const service = new WorkerAppService(env);
     const url = new URL(request.url);
     const token = getBearerToken(request);
-    const responseHeaders = corsHeaders(request.headers.get("origin"));
+    const responseHeaders = corsHeaders(
+      request.headers.get("origin"),
+      request.headers.get("access-control-request-headers"),
+    );
 
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: responseHeaders });

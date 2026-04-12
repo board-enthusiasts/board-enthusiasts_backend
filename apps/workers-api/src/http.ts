@@ -11,12 +11,34 @@ export class ApiError extends Error {
   }
 }
 
-export function corsHeaders(origin?: string | null): HeadersInit {
+export function corsHeaders(origin?: string | null, requestedHeaders?: string | null): HeadersInit {
   const allowOrigin = origin && origin.trim().length > 0 ? origin : "*";
+  const allowHeaders = new Set([
+    "authorization",
+    "content-type",
+    "accept",
+    "x-be-website-session-id",
+    "x-be-website-auth-state",
+    "x-be-page-path",
+    "x-be-home-session-id",
+    "x-be-home-device-id",
+    "x-be-home-device-id-source",
+    "x-be-home-auth-state",
+    "x-be-home-client-version",
+    "x-be-home-app-environment",
+  ]);
+
+  for (const header of (requestedHeaders ?? "").split(",")) {
+    const trimmed = header.trim();
+    if (trimmed) {
+      allowHeaders.add(trimmed);
+    }
+  }
+
   return {
     "access-control-allow-origin": allowOrigin,
     "access-control-allow-methods": "GET,POST,PUT,DELETE,OPTIONS",
-    "access-control-allow-headers": "authorization,content-type,accept",
+    "access-control-allow-headers": Array.from(allowHeaders).join(","),
     "access-control-max-age": "86400",
     "cache-control": "no-store",
     pragma: "no-cache",
