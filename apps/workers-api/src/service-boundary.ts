@@ -348,6 +348,21 @@ type TitleDetailViewRow = {
   last_country_code: string | null;
 };
 
+type TitleGetClickRow = {
+  title_id: string;
+  viewer_hash: string;
+  viewer_source: "ip_address" | "visitor_id";
+  auth_state: "anonymous" | "authenticated";
+  studio_slug: string | null;
+  title_slug: string | null;
+  surface: string | null;
+  app_environment: string | null;
+  first_clicked_at: string;
+  last_clicked_at: string;
+  first_country_code: string | null;
+  last_country_code: string | null;
+};
+
 type PlayerFollowedStudioRow = {
   user_id: string;
   studio_id: string;
@@ -358,6 +373,8 @@ type TitleCollectionCounts = {
   wishlistCount: number;
   libraryCount: number;
   viewCount?: number;
+  getTitleClickCount?: number;
+  lastGetTitleClickedAt?: string | null;
 };
 
 type HomeOfferingSpotlightRow = {
@@ -1208,6 +1225,8 @@ function buildDeveloperTitle(
     minAgeYears: title.min_age_years,
     ageDisplay: buildAgeDisplay(title.age_rating_authority, title.age_rating_value),
     viewCount: collectionCounts.viewCount ?? 0,
+    getTitleClickCount: collectionCounts.getTitleClickCount ?? 0,
+    lastGetTitleClickedAt: collectionCounts.lastGetTitleClickedAt ?? null,
     wishlistCount: collectionCounts.wishlistCount,
     libraryCount: collectionCounts.libraryCount,
     cardImageUrl: mediaRows.find((row) => row.media_role === "card")?.source_url ?? null,
@@ -1619,6 +1638,9 @@ export class WorkerAppService {
     if (input.event === "title_detail_viewed") {
       await this.recordUniqueBrowserTitleDetailView(input, options);
     }
+    if (input.event === "title_get_clicked") {
+      await this.recordUniqueBrowserTitleGetClick(input, options);
+    }
 
     const authState = input.authState === "authenticated" ? "authenticated" : "anonymous";
     const provider = input.provider === "discord" || input.provider === "github" || input.provider === "google" ? input.provider : null;
@@ -1727,6 +1749,76 @@ export class WorkerAppService {
       .eq("viewer_hash", viewerHash);
     if (error) {
       throw problem(500, "title_detail_view_record_failed", "Title analytics lookup failed.", error.message);
+    }
+  }
+
+  private async recordUniqueBrowserTitleGetClick(
+    input: AnalyticsEventRequest,
+    options: AnalyticsEventOptions,
+  ): Promise<void> {
+    const titleId = normalizeBeHomeText(
+      typeof input.metadata?.titleId === "string" ? input.metadata.titleId : null,
+      120,
+    );
+    if (!titleId) {
+      return;
+    }
+
+    const visitorId = normalizeBeHomeText(input.visitorId, 120);
+    const ipAddress = normalizeBeHomeText(options.ipAddress, 120);
+    const viewerSource: TitleGetClickRow["viewer_source"] = visitorId ? "visitor_id" : "ip_address";
+    const viewerIdentity = visitorId ? `title-get-visitor:${visitorId}` : ipAddress ? `title-get-ip:${ipAddress}` : null;
+    if (!viewerIdentity) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const viewerHash = await hashBeHomeDeviceId(viewerIdentity, this.context.supabaseSecretKey);
+    const countryCode = normalizeBeHomeCountryCode(options.countryCode);
+    const authState: TitleGetClickRow["auth_state"] = input.authState === "authenticated" ? "authenticated" : "anonymous";
+    const studioSlug = normalizeAnalyticsString(input.studioSlug, 120);
+    const titleSlug = normalizeAnalyticsString(input.titleSlug, 120);
+    const surface = normalizeAnalyticsString(input.surface, 120);
+    const existing = await this.getTitleGetClick(titleId, viewerHash);
+
+    if (!existing) {
+      const { error } = await this.client.from("title_get_clicks").insert({
+        title_id: titleId,
+        viewer_hash: viewerHash,
+        viewer_source: viewerSource,
+        auth_state: authState,
+        studio_slug: studioSlug,
+        title_slug: titleSlug,
+        surface,
+        app_environment: this.context.envName,
+        first_clicked_at: now,
+        last_clicked_at: now,
+        first_country_code: countryCode,
+        last_country_code: countryCode,
+      });
+      if (error) {
+        throw problem(500, "title_get_click_record_failed", "Title analytics lookup failed.", error.message);
+      }
+
+      return;
+    }
+
+    const { error } = await this.client
+      .from("title_get_clicks")
+      .update({
+        viewer_source: viewerSource,
+        auth_state: authState,
+        studio_slug: studioSlug,
+        title_slug: titleSlug,
+        surface,
+        app_environment: this.context.envName,
+        last_clicked_at: now,
+        last_country_code: countryCode,
+      })
+      .eq("title_id", titleId)
+      .eq("viewer_hash", viewerHash);
+    if (error) {
+      throw problem(500, "title_get_click_record_failed", "Title analytics lookup failed.", error.message);
     }
   }
 
@@ -6572,7 +6664,7 @@ export class WorkerAppService {
   private async getTitleCollectionCounts(titleIds: string[]): Promise<Map<string, TitleCollectionCounts>> {
     const countsByTitleId = new Map<string, TitleCollectionCounts>();
     for (const titleId of titleIds) {
-      countsByTitleId.set(titleId, { wishlistCount: 0, libraryCount: 0, viewCount: 0 });
+      countsByTitleId.set(titleId, { wishlistCount: 0, libraryCount: 0, viewCount: 0, getTitleClickCount: 0, lastGetTitleClickedAt: null });
     }
     if (titleIds.length === 0) {
       return countsByTitleId;
@@ -6582,10 +6674,12 @@ export class WorkerAppService {
       { data: wishlistRows, error: wishlistError },
       { data: libraryRows, error: libraryError },
       { data: viewRows, error: viewError },
+      { data: titleGetClickRows, error: titleGetClickError },
     ] = await Promise.all([
       this.client.from("player_wishlist_titles").select("title_id").in("title_id", titleIds),
       this.client.from("player_library_titles").select("title_id").in("title_id", titleIds),
       this.client.from("title_detail_views").select("title_id").in("title_id", titleIds),
+      this.client.from("title_get_clicks").select("title_id, last_clicked_at").in("title_id", titleIds),
     ]);
     if (wishlistError) {
       throw problem(500, "title_wishlist_count_lookup_failed", "Title analytics lookup failed.", wishlistError.message);
@@ -6595,6 +6689,9 @@ export class WorkerAppService {
     }
     if (viewError) {
       throw problem(500, "title_view_count_lookup_failed", "Title analytics lookup failed.", viewError.message);
+    }
+    if (titleGetClickError) {
+      throw problem(500, "title_get_click_count_lookup_failed", "Title analytics lookup failed.", titleGetClickError.message);
     }
 
     for (const row of (wishlistRows as PlayerWishlistRow[] | null) ?? []) {
@@ -6615,6 +6712,16 @@ export class WorkerAppService {
       const current = countsByTitleId.get(row.title_id);
       if (current) {
         current.viewCount = (current.viewCount ?? 0) + 1;
+      }
+    }
+
+    for (const row of (titleGetClickRows as Array<Pick<TitleGetClickRow, "title_id" | "last_clicked_at">> | null) ?? []) {
+      const current = countsByTitleId.get(row.title_id);
+      if (current) {
+        current.getTitleClickCount = (current.getTitleClickCount ?? 0) + 1;
+        if (!current.lastGetTitleClickedAt || current.lastGetTitleClickedAt.localeCompare(row.last_clicked_at) < 0) {
+          current.lastGetTitleClickedAt = row.last_clicked_at;
+        }
       }
     }
 
@@ -7154,6 +7261,20 @@ export class WorkerAppService {
     }
 
     return ((data as TitleDetailViewRow[])[0] ?? null);
+  }
+
+  private async getTitleGetClick(titleId: string, viewerHash: string): Promise<TitleGetClickRow | null> {
+    const { data, error } = await this.client
+      .from("title_get_clicks")
+      .select("*")
+      .eq("title_id", titleId)
+      .eq("viewer_hash", viewerHash)
+      .limit(1);
+    if (error) {
+      throw problem(500, "title_get_click_lookup_failed", "Title analytics lookup failed.", error.message);
+    }
+
+    return ((data as TitleGetClickRow[])[0] ?? null);
   }
 
   private async listBeHomeDeviceIdentities(): Promise<BeHomeDeviceIdentityRow[]> {

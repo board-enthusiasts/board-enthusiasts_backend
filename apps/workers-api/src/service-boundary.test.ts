@@ -143,6 +143,21 @@ type TitleDetailViewRow = {
   last_country_code: string | null;
 };
 
+type TitleGetClickRow = {
+  title_id: string;
+  viewer_hash: string;
+  viewer_source: "ip_address" | "visitor_id";
+  auth_state: "anonymous" | "authenticated";
+  studio_slug: string | null;
+  title_slug: string | null;
+  surface: string | null;
+  app_environment: string | null;
+  first_clicked_at: string;
+  last_clicked_at: string;
+  first_country_code: string | null;
+  last_country_code: string | null;
+};
+
 type WorkerAppServicePrivateTestAccess = {
   getDeveloperTitleDetails(userId: string, titleId: string): Promise<Record<string, unknown>>;
   getUsersByIds(userIds: string[]): Promise<AppUserRow[]>;
@@ -164,6 +179,7 @@ const tables: {
   be_home_presence_sessions: BeHomePresenceSessionRow[];
   be_home_device_identities: BeHomeDeviceIdentityRow[];
   title_detail_views: TitleDetailViewRow[];
+  title_get_clicks: TitleGetClickRow[];
 } = {
   marketing_contacts: [],
   marketing_contact_role_interests: [],
@@ -176,6 +192,7 @@ const tables: {
   be_home_presence_sessions: [],
   be_home_device_identities: [],
   title_detail_views: [],
+  title_get_clicks: [],
 };
 
 function resetTables() {
@@ -190,6 +207,7 @@ function resetTables() {
   tables.be_home_presence_sessions = [];
   tables.be_home_device_identities = [];
   tables.title_detail_views = [];
+  tables.title_get_clicks = [];
 }
 
 const supabaseAuthMocks = vi.hoisted(() => ({
@@ -1398,6 +1416,119 @@ describe("WorkerAppService.recordAnalyticsEvent", () => {
     });
     expect(tables.title_detail_views[0]!.viewer_hash).not.toBe("board-install-1");
   });
+
+  it("records unique Get Title clicks once per title and visitor id when available", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    await service.recordAnalyticsEvent({
+      event: "title_get_clicked",
+      path: "/browse/blue-harbor-games/lantern-drift",
+      authState: "authenticated",
+      studioSlug: "blue-harbor-games",
+      titleSlug: "lantern-drift",
+      surface: "quick-view",
+      visitorId: "visitor-1",
+      metadata: { titleId: "title-1" },
+    }, {
+      countryCode: "US",
+      ipAddress: "203.0.113.10",
+    });
+    await service.recordAnalyticsEvent({
+      event: "title_get_clicked",
+      path: "/browse/blue-harbor-games/lantern-drift",
+      authState: "anonymous",
+      studioSlug: "blue-harbor-games",
+      titleSlug: "lantern-drift",
+      surface: "title-detail",
+      visitorId: "visitor-1",
+      metadata: { titleId: "title-1" },
+    }, {
+      countryCode: "CA",
+      ipAddress: "203.0.113.11",
+    });
+    await service.recordAnalyticsEvent({
+      event: "title_get_clicked",
+      path: "/browse/blue-harbor-games/hearthside-protocol",
+      authState: "anonymous",
+      studioSlug: "blue-harbor-games",
+      titleSlug: "hearthside-protocol",
+      surface: "title-detail",
+      visitorId: "visitor-1",
+      metadata: { titleId: "title-2" },
+    }, {
+      countryCode: "CA",
+      ipAddress: "203.0.113.11",
+    });
+
+    expect(tables.title_get_clicks).toHaveLength(2);
+    expect(tables.title_get_clicks[0]).toMatchObject({
+      title_id: "title-1",
+      viewer_source: "visitor_id",
+      auth_state: "anonymous",
+      studio_slug: "blue-harbor-games",
+      title_slug: "lantern-drift",
+      surface: "title-detail",
+      app_environment: "staging",
+      first_country_code: "US",
+      last_country_code: "CA",
+    });
+    expect(tables.title_get_clicks[1]).toMatchObject({
+      title_id: "title-2",
+      viewer_source: "visitor_id",
+      title_slug: "hearthside-protocol",
+      last_country_code: "CA",
+    });
+    expect(tables.title_get_clicks[0]!.viewer_hash).not.toBe("visitor-1");
+    expect(new Date(tables.title_get_clicks[0]!.last_clicked_at).getTime()).toBeGreaterThanOrEqual(new Date(tables.title_get_clicks[0]!.first_clicked_at).getTime());
+  });
+
+  it("falls back to IP-based uniqueness for Get Title clicks when visitor ids are unavailable", async () => {
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    await service.recordAnalyticsEvent({
+      event: "title_get_clicked",
+      path: "/browse/blue-harbor-games/lantern-drift",
+      authState: "anonymous",
+      studioSlug: "blue-harbor-games",
+      titleSlug: "lantern-drift",
+      surface: "quick-view",
+      metadata: { titleId: "title-1" },
+    }, {
+      countryCode: "US",
+      ipAddress: "203.0.113.10",
+    });
+    await service.recordAnalyticsEvent({
+      event: "title_get_clicked",
+      path: "/browse/blue-harbor-games/lantern-drift",
+      authState: "authenticated",
+      studioSlug: "blue-harbor-games",
+      titleSlug: "lantern-drift",
+      surface: "title-detail",
+      metadata: { titleId: "title-1" },
+    }, {
+      countryCode: "US",
+      ipAddress: "203.0.113.10",
+    });
+
+    expect(tables.title_get_clicks).toHaveLength(1);
+    expect(tables.title_get_clicks[0]).toMatchObject({
+      title_id: "title-1",
+      viewer_source: "ip_address",
+      auth_state: "authenticated",
+      surface: "title-detail",
+    });
+    expect(tables.title_get_clicks[0]!.viewer_hash).not.toBe("203.0.113.10");
+  });
 });
 
 describe("WorkerAppService.verifyCurrentUserPassword", () => {
@@ -1765,7 +1896,9 @@ describe("WorkerAppService title analytics projections", () => {
       created_at: "2026-03-08T12:00:00Z",
       updated_at: "2026-03-08T12:00:00Z",
     });
-    vi.spyOn(service as never, "getTitleCollectionCounts" as never).mockResolvedValue(new Map([["title-1", { wishlistCount: 18, libraryCount: 7, viewCount: 63 }]]));
+    vi.spyOn(service as never, "getTitleCollectionCounts" as never).mockResolvedValue(
+      new Map([["title-1", { wishlistCount: 18, libraryCount: 7, viewCount: 63, getTitleClickCount: 12, lastGetTitleClickedAt: "2026-04-10T19:45:00Z" }]]),
+    );
 
     await expect(serviceAccess.getDeveloperTitleDetails("user-1", "title-1")).resolves.toEqual(
       expect.objectContaining({
@@ -1773,6 +1906,8 @@ describe("WorkerAppService title analytics projections", () => {
         maxPlayersOrMore: true,
         playerCountDisplay: "1-4+ players",
         viewCount: 63,
+        getTitleClickCount: 12,
+        lastGetTitleClickedAt: "2026-04-10T19:45:00Z",
         wishlistCount: 18,
         libraryCount: 7,
       }),
