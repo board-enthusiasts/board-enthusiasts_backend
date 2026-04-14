@@ -39,7 +39,7 @@ as $$
     truncate table
         public.be_home_presence_sessions,
         public.be_home_device_identities,
-        public.home_offering_spotlights,
+        public.home_offering_spotlight_entries,
         public.home_spotlight_entries,
         public.player_followed_studios,
         public.catalog_media_entries,
