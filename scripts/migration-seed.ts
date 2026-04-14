@@ -5,6 +5,9 @@ import { pathToFileURL } from "node:url";
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import {
+  catalogMediaTypeDefinitions,
+  maintainedAgeRatingAuthorities,
+  maintainedGenres,
   migrationMediaBuckets,
   migrationMediaUploadPolicies,
   migrationSeedStudios,
@@ -203,6 +206,60 @@ async function ensureBucket(
   });
   if (createError) {
     throw createError;
+  }
+}
+
+async function seedCatalogReferenceDefinitions(client: SupabaseClient): Promise<void> {
+  const genreRows = maintainedGenres.map((genre) => ({
+    slug: genre.slug,
+    display_name: genre.displayName
+  }));
+  const { error: genreUpsertError } = await client.from("genres").upsert(genreRows, {
+    onConflict: "slug",
+    ignoreDuplicates: true
+  });
+  if (genreUpsertError) {
+    throw genreUpsertError;
+  }
+
+  const ageRatingAuthorityRows = maintainedAgeRatingAuthorities.map((authority) => ({
+    code: authority.code,
+    display_name: authority.displayName
+  }));
+  const { error: ageRatingAuthorityUpsertError } = await client
+    .from("age_rating_authorities")
+    .upsert(ageRatingAuthorityRows, {
+      onConflict: "code",
+      ignoreDuplicates: true
+    });
+  if (ageRatingAuthorityUpsertError) {
+    throw ageRatingAuthorityUpsertError;
+  }
+
+  const catalogMediaTypeRows = Object.values(catalogMediaTypeDefinitions).map((definition) => ({
+    key: definition.key,
+    owner_kind: definition.ownerKind,
+    display_name: definition.displayName,
+    usage_summary: definition.usageSummary,
+    bucket_name: definition.bucket,
+    max_upload_bytes: definition.maxUploadBytes,
+    accepted_mime_types: definition.acceptedMimeTypes,
+    aspect_width: definition.aspectWidth,
+    aspect_height: definition.aspectHeight,
+    allows_multiple: definition.allowsMultiple,
+    supports_video: definition.supportsVideo,
+    recommended_width: definition.recommendedWidth,
+    recommended_height: definition.recommendedHeight,
+    accepted_file_types: definition.acceptedFileTypes
+  }));
+  const { error: catalogMediaTypeUpsertError } = await client
+    .from("catalog_media_type_definitions")
+    .upsert(catalogMediaTypeRows, {
+      onConflict: "key",
+      ignoreDuplicates: true
+    });
+  if (catalogMediaTypeUpsertError) {
+    throw catalogMediaTypeUpsertError;
   }
 }
 
@@ -495,6 +552,9 @@ async function seedOnce(options: SeedOptions): Promise<void> {
       throw boardProfileError;
     }
   }
+
+  console.log("==> Restoring genre, age-rating, and media-type reference catalogs");
+  await seedCatalogReferenceDefinitions(client);
 
   console.log("==> Uploading studio media and seeding studios");
   const studioRows: Array<Record<string, unknown>> = [];
