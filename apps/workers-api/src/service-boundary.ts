@@ -9,6 +9,17 @@ import {
   type MarketingSignupResponse,
   type BoardProfileResponse,
   type CreateDeveloperTitleRequest,
+  type DeveloperAnalyticsAggregationKind,
+  type DeveloperAnalyticsMetric,
+  type DeveloperAnalyticsMetricKind,
+  type DeveloperAnalyticsResponse,
+  type DeveloperAnalyticsSavedView,
+  type DeveloperAnalyticsSavedViewListResponse,
+  type DeveloperAnalyticsSavedViewPanel,
+  type DeveloperAnalyticsSavedViewResponse,
+  type DeveloperAnalyticsSubjectScope,
+  type DeveloperAnalyticsValueFormat,
+  type UpsertDeveloperAnalyticsSavedViewRequest,
   type CreateTitleShowcaseMediaRequest,
   type DeleteDeveloperTitleRequest,
   catalogMediaTypeDefinitions,
@@ -369,6 +380,61 @@ type PlayerFollowedStudioRow = {
   created_at: string;
 };
 
+type AnalyticsEventTypeRow = {
+  id: string;
+  descriptor: string;
+  display_name: string;
+  internal_description: string | null;
+  public_description: string | null;
+  public_tooltip: string | null;
+  subject_scope: DeveloperAnalyticsSubjectScope;
+  aggregation_kind: DeveloperAnalyticsAggregationKind;
+  metric_kind: DeveloperAnalyticsMetricKind;
+  value_format: DeveloperAnalyticsValueFormat;
+  supports_date_range: boolean;
+  calculation_config: Record<string, unknown> | null;
+  display_order: number;
+  is_active: boolean;
+  is_public: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+type AnalyticsDerivedCalculationConfig = {
+  numeratorDescriptor?: string;
+  denominatorDescriptor?: string;
+  addedDescriptor?: string;
+  removedDescriptor?: string;
+};
+
+type AnalyticsEventRow = {
+  id: string;
+  event_type_id: string;
+  studio_id: string | null;
+  title_id: string | null;
+  actor_user_id: string | null;
+  actor_hash: string | null;
+  occurred_at: string;
+  surface: string | null;
+  app_environment: string | null;
+  country_code: string | null;
+  metadata: Record<string, unknown> | null;
+};
+
+type DeveloperAnalyticsSavedViewConfiguration = {
+  panels?: DeveloperAnalyticsSavedViewPanel[];
+};
+
+type DeveloperAnalyticsSavedViewRow = {
+  id: string;
+  user_id: string;
+  subject_scope: DeveloperAnalyticsSubjectScope;
+  name: string;
+  configuration: DeveloperAnalyticsSavedViewConfiguration | null;
+  created_at: string;
+  updated_at: string;
+};
+
 type TitleCollectionCounts = {
   wishlistCount: number;
   libraryCount: number;
@@ -652,6 +718,53 @@ const analyticsEventNames = new Set([
   "studio_followed",
   "homepage_spotlight_clicked",
 ] as const);
+
+const developerAnalyticsDefaultRangeMs = 30 * 24 * 60 * 60 * 1000;
+const developerAnalyticsSavedViewRangePresetIds = new Set([
+  "last-24-hours",
+  "last-7-days",
+  "last-30-days",
+  "last-90-days",
+  "last-6-months",
+  "last-year",
+  "today",
+  "yesterday",
+  "this-week",
+  "this-month",
+  "this-year",
+]);
+
+type AnalyticsMetricStats = {
+  value: number;
+  lastOccurredAt: string | null;
+};
+
+function parseAnalyticsDerivedCalculationConfig(type: AnalyticsEventTypeRow): AnalyticsDerivedCalculationConfig {
+  if (!type.calculation_config || typeof type.calculation_config !== "object") {
+    return {};
+  }
+
+  const config = type.calculation_config;
+  return {
+    numeratorDescriptor: typeof config.numeratorDescriptor === "string" ? config.numeratorDescriptor : undefined,
+    denominatorDescriptor: typeof config.denominatorDescriptor === "string" ? config.denominatorDescriptor : undefined,
+    addedDescriptor: typeof config.addedDescriptor === "string" ? config.addedDescriptor : undefined,
+    removedDescriptor: typeof config.removedDescriptor === "string" ? config.removedDescriptor : undefined,
+  };
+}
+
+function getPreviousDeveloperAnalyticsRange(range: DeveloperAnalyticsResponse["range"]): DeveloperAnalyticsResponse["range"] {
+  const currentFrom = new Date(range.from);
+  const currentTo = new Date(range.to);
+  const durationMs = Math.max(currentTo.getTime() - currentFrom.getTime(), 0);
+  const previousTo = new Date(currentFrom.getTime() - 1);
+  const previousFrom = new Date(previousTo.getTime() - durationMs);
+
+  return {
+    from: previousFrom.toISOString(),
+    to: previousTo.toISOString(),
+  };
+}
 
 const beHomeHeartbeatIntervalSeconds = 60;
 const beHomeActiveTtlSeconds = 180;
@@ -1299,6 +1412,85 @@ function mapPlayerStudioFollowMutation(studioId: string, included: boolean, alre
   };
 }
 
+function formatDeveloperAnalyticsValue(value: number, valueFormat: DeveloperAnalyticsValueFormat): string {
+  if (valueFormat === "percentage") {
+    return `${new Intl.NumberFormat("en-US", {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 1,
+    }).format(value)}%`;
+  }
+
+  return new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function formatSignedPercentagePointChange(value: number): string {
+  const absolute = Math.abs(value);
+  const formatted = new Intl.NumberFormat("en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 1,
+  }).format(absolute);
+
+  if (value === 0) {
+    return "No change from the previous matching time range.";
+  }
+
+  return `${value > 0 ? "Up" : "Down"} ${formatted} percentage point${absolute === 1 ? "" : "s"} from the previous matching time range.`;
+}
+
+function mapDeveloperAnalyticsMetric(
+  type: AnalyticsEventTypeRow,
+  value: number,
+  lastOccurredAt: string | null,
+  options: {
+    secondaryValue?: string | null;
+    statusMessage?: string | null;
+  } = {},
+): DeveloperAnalyticsMetric {
+  return {
+    id: type.id,
+    descriptor: type.descriptor,
+    displayName: type.display_name,
+    internalDescription: type.internal_description,
+    publicDescription: type.public_description,
+    publicTooltip: type.public_tooltip,
+    subjectScope: type.subject_scope,
+    aggregationKind: type.aggregation_kind,
+    metricKind: type.metric_kind,
+    valueFormat: type.value_format,
+    valueDisplay: formatDeveloperAnalyticsValue(value, type.value_format),
+    secondaryValue: options.secondaryValue ?? null,
+    statusMessage: options.statusMessage ?? null,
+    supportsDateRange: type.supports_date_range,
+    displayOrder: type.display_order,
+    value,
+    lastOccurredAt,
+  };
+}
+
+function normalizeDeveloperAnalyticsSavedViewPanels(
+  panels: readonly DeveloperAnalyticsSavedViewPanel[] | null | undefined,
+): DeveloperAnalyticsSavedViewPanel[] {
+  return (panels ?? []).map((panel) => ({
+    descriptor: panel.descriptor,
+    rangePresetId: panel.rangePresetId ?? null,
+    customFrom: panel.customFrom ?? null,
+    customTo: panel.customTo ?? null,
+  }));
+}
+
+function mapDeveloperAnalyticsSavedView(row: DeveloperAnalyticsSavedViewRow): DeveloperAnalyticsSavedView {
+  return {
+    id: row.id,
+    subjectScope: row.subject_scope,
+    name: row.name,
+    panels: normalizeDeveloperAnalyticsSavedViewPanels(row.configuration?.panels),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 export interface Env {
   APP_ENV?: string;
   BE_ANALYTICS?: AnalyticsEngineDataset;
@@ -1637,21 +1829,45 @@ export class WorkerAppService {
 
     if (input.event === "title_detail_viewed") {
       await this.recordUniqueBrowserTitleDetailView(input, options);
+      await this.recordDeveloperAnalyticsEvent({
+        descriptor: "title_detail_viewed",
+        titleId: normalizeBeHomeText(typeof input.metadata?.titleId === "string" ? input.metadata.titleId : null, 120),
+        actorHash: await this.resolveBrowserAnalyticsActorHash("title-view", input, options),
+        occurredAt: new Date().toISOString(),
+        surface: normalizeAnalyticsString(input.surface, 120),
+        appEnvironment: this.context.envName,
+        countryCode: normalizeBeHomeCountryCode(options.countryCode),
+        metadata: typeof input.metadata === "object" && input.metadata !== null ? input.metadata : null,
+      });
     }
     if (input.event === "title_get_clicked") {
       await this.recordUniqueBrowserTitleGetClick(input, options);
+      await this.recordDeveloperAnalyticsEvent({
+        descriptor: "title_get_clicked",
+        titleId: normalizeBeHomeText(typeof input.metadata?.titleId === "string" ? input.metadata.titleId : null, 120),
+        actorHash: await this.resolveBrowserAnalyticsActorHash("title-get", input, options),
+        occurredAt: new Date().toISOString(),
+        surface: normalizeAnalyticsString(input.surface, 120),
+        appEnvironment: this.context.envName,
+        countryCode: normalizeBeHomeCountryCode(options.countryCode),
+        metadata: typeof input.metadata === "object" && input.metadata !== null ? input.metadata : null,
+      });
+    }
+
+    return {
+      accepted: true,
+      analyticsEnabled: this.writeAnalyticsDatasetEvent(input),
+    };
+  }
+
+  private writeAnalyticsDatasetEvent(input: AnalyticsEventRequest): boolean {
+    if (!this.analyticsDataset) {
+      return false;
     }
 
     const authState = input.authState === "authenticated" ? "authenticated" : "anonymous";
     const provider = input.provider === "discord" || input.provider === "github" || input.provider === "google" ? input.provider : null;
     const contentKind = input.contentKind === "game" || input.contentKind === "app" ? input.contentKind : null;
-
-    if (!this.analyticsDataset) {
-      return {
-        accepted: true,
-        analyticsEnabled: false,
-      };
-    }
 
     this.analyticsDataset.writeDataPoint({
       indexes: [`${this.context.envName}:${input.event}`],
@@ -1676,10 +1892,7 @@ export class WorkerAppService {
       ],
     });
 
-    return {
-      accepted: true,
-      analyticsEnabled: true,
-    };
+    return true;
   }
 
   private async recordUniqueBrowserTitleDetailView(
@@ -1822,6 +2035,136 @@ export class WorkerAppService {
     }
   }
 
+  private async resolveBrowserAnalyticsActorHash(
+    prefix: "title-view" | "title-get",
+    input: AnalyticsEventRequest,
+    options: AnalyticsEventOptions,
+  ): Promise<string | null> {
+    const ipAddress = normalizeBeHomeText(options.ipAddress, 120);
+    const visitorId = normalizeBeHomeText(input.visitorId, 120);
+    const viewerIdentity =
+      prefix === "title-view"
+        ? ipAddress
+          ? `title-view-ip:${ipAddress}`
+          : visitorId
+            ? `title-view-visitor:${visitorId}`
+            : null
+        : visitorId
+          ? `title-get-visitor:${visitorId}`
+          : ipAddress
+            ? `title-get-ip:${ipAddress}`
+            : null;
+    if (!viewerIdentity) {
+      return null;
+    }
+
+    return hashBeHomeDeviceId(viewerIdentity, this.context.supabaseSecretKey);
+  }
+
+  private async getAnalyticsEventTypes(
+    subjectScope: DeveloperAnalyticsSubjectScope,
+    descriptors?: string[],
+  ): Promise<AnalyticsEventTypeRow[]> {
+    let query = this.client
+      .from("analytics_event_types")
+      .select("*")
+      .eq("subject_scope", subjectScope)
+      .eq("is_active", true)
+      .eq("is_public", true);
+
+    if (descriptors && descriptors.length > 0) {
+      query = query.in("descriptor", descriptors);
+    }
+
+    const { data, error } = await query.order("display_order", { ascending: true });
+    if (error) {
+      throw problem(500, "analytics_event_type_lookup_failed", "Analytics metric lookup failed.", error.message);
+    }
+
+    return data as AnalyticsEventTypeRow[];
+  }
+
+  private async getAnalyticsEventTypeByDescriptor(descriptor: string): Promise<AnalyticsEventTypeRow | null> {
+    const { data, error } = await this.client
+      .from("analytics_event_types")
+      .select("*")
+      .eq("descriptor", descriptor)
+      .eq("is_active", true)
+      .limit(1);
+    if (error) {
+      throw problem(500, "analytics_event_type_lookup_failed", "Analytics metric lookup failed.", error.message);
+    }
+
+    const rows = (data as AnalyticsEventTypeRow[] | null) ?? [];
+    return rows[0] ?? null;
+  }
+
+  private async recordDeveloperAnalyticsEvent(input: {
+    descriptor: string;
+    studioId?: string | null;
+    titleId?: string | null;
+    actorUserId?: string | null;
+    actorHash?: string | null;
+    occurredAt?: string | null;
+    surface?: string | null;
+    appEnvironment?: string | null;
+    countryCode?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }): Promise<void> {
+    const eventType = await this.getAnalyticsEventTypeByDescriptor(input.descriptor);
+    if (!eventType) {
+      return;
+    }
+
+    const titleId = normalizeBeHomeText(input.titleId, 120);
+    const studioId = normalizeBeHomeText(input.studioId, 120);
+    if (eventType.subject_scope === "title" && !titleId) {
+      return;
+    }
+    if (eventType.subject_scope === "studio" && !studioId) {
+      return;
+    }
+
+    const occurredAt = input.occurredAt && !Number.isNaN(new Date(input.occurredAt).getTime())
+      ? new Date(input.occurredAt).toISOString()
+      : new Date().toISOString();
+
+    const { error } = await this.client.from("analytics_events").insert({
+      event_type_id: eventType.id,
+      studio_id: studioId,
+      title_id: titleId,
+      actor_user_id: input.actorUserId ?? null,
+      actor_hash: input.actorHash ?? null,
+      occurred_at: occurredAt,
+      surface: normalizeAnalyticsString(input.surface, 120),
+      app_environment: normalizeBeHomeText(input.appEnvironment, 80) ?? this.context.envName,
+      country_code: normalizeBeHomeCountryCode(input.countryCode),
+      metadata: input.metadata ?? null,
+    });
+    if (error) {
+      throw problem(500, "analytics_event_record_failed", "Analytics event recording failed.", error.message);
+    }
+  }
+
+  private async tryRecordDeveloperAnalyticsEvent(input: {
+    descriptor: string;
+    studioId?: string | null;
+    titleId?: string | null;
+    actorUserId?: string | null;
+    actorHash?: string | null;
+    occurredAt?: string | null;
+    surface?: string | null;
+    appEnvironment?: string | null;
+    countryCode?: string | null;
+    metadata?: Record<string, unknown> | null;
+  }): Promise<void> {
+    try {
+      await this.recordDeveloperAnalyticsEvent(input);
+    } catch {
+      // Analytics must never break the main product workflow.
+    }
+  }
+
   async recordBeHomeTitleDetailView(
     input: BeHomeTitleDetailViewRequest,
     presence: BeHomePresenceRequest | null,
@@ -1874,6 +2217,20 @@ export class WorkerAppService {
         throw problem(500, "title_detail_view_record_failed", "Title analytics lookup failed.", error.message);
       }
 
+      await this.tryRecordDeveloperAnalyticsEvent({
+        descriptor: "title_detail_viewed",
+        titleId,
+        actorHash: viewerHash,
+        occurredAt: now,
+        surface,
+        appEnvironment,
+        countryCode,
+        metadata: {
+          source: "be_home",
+          sessionId,
+        },
+      });
+
       return { accepted: true };
     }
 
@@ -1894,6 +2251,20 @@ export class WorkerAppService {
     if (error) {
       throw problem(500, "title_detail_view_record_failed", "Title analytics lookup failed.", error.message);
     }
+
+    await this.tryRecordDeveloperAnalyticsEvent({
+      descriptor: "title_detail_viewed",
+      titleId,
+      actorHash: viewerHash,
+      occurredAt: now,
+      surface,
+      appEnvironment,
+      countryCode,
+      metadata: {
+        source: "be_home",
+        sessionId,
+      },
+    });
 
     return { accepted: true };
   }
@@ -3328,6 +3699,106 @@ export class WorkerAppService {
     };
   }
 
+  async listDeveloperAnalyticsSavedViews(
+    token: string,
+    subjectScope: DeveloperAnalyticsSubjectScope,
+  ): Promise<DeveloperAnalyticsSavedViewListResponse> {
+    const user = await this.requireUser(token);
+    const rows = await this.getDeveloperAnalyticsSavedViewsByUserAndScope(user.appUser.id, subjectScope);
+    return {
+      views: rows.map(mapDeveloperAnalyticsSavedView),
+    };
+  }
+
+  async createDeveloperAnalyticsSavedView(
+    token: string,
+    input: UpsertDeveloperAnalyticsSavedViewRequest,
+  ): Promise<DeveloperAnalyticsSavedViewResponse> {
+    const user = await this.requireUser(token);
+    const normalizedInput = await this.validateDeveloperAnalyticsSavedViewInput(input);
+    const now = new Date().toISOString();
+    const { data, error } = await this.client
+      .from("developer_analytics_saved_views")
+      .insert({
+        user_id: user.appUser.id,
+        subject_scope: normalizedInput.subjectScope,
+        name: normalizedInput.name,
+        configuration: {
+          panels: normalizedInput.panels,
+        },
+        created_at: now,
+        updated_at: now,
+      })
+      .select("*")
+      .single();
+    if (error) {
+      throw problem(500, "developer_analytics_saved_view_create_failed", "Saved analytics view could not be created.", error.message);
+    }
+
+    return {
+      view: mapDeveloperAnalyticsSavedView(data as DeveloperAnalyticsSavedViewRow),
+    };
+  }
+
+  async updateDeveloperAnalyticsSavedView(
+    token: string,
+    viewId: string,
+    input: UpsertDeveloperAnalyticsSavedViewRequest,
+  ): Promise<DeveloperAnalyticsSavedViewResponse> {
+    const user = await this.requireUser(token);
+    const savedView = await this.getDeveloperAnalyticsSavedViewById(user.appUser.id, viewId);
+    const normalizedInput = await this.validateDeveloperAnalyticsSavedViewInput(input);
+    if (savedView.subject_scope !== normalizedInput.subjectScope) {
+      throw validationProblem({
+        subjectScope: ["Saved views cannot change between studio and title analytics."],
+      });
+    }
+
+    const now = new Date().toISOString();
+    const { data, error } = await this.client
+      .from("developer_analytics_saved_views")
+      .update({
+        name: normalizedInput.name,
+        configuration: {
+          panels: normalizedInput.panels,
+        },
+        updated_at: now,
+      })
+      .eq("id", savedView.id)
+      .select("*")
+      .single();
+    if (error) {
+      throw problem(500, "developer_analytics_saved_view_update_failed", "Saved analytics view could not be updated.", error.message);
+    }
+
+    return {
+      view: mapDeveloperAnalyticsSavedView(data as DeveloperAnalyticsSavedViewRow),
+    };
+  }
+
+  async deleteDeveloperAnalyticsSavedView(token: string, viewId: string): Promise<void> {
+    const user = await this.requireUser(token);
+    await this.getDeveloperAnalyticsSavedViewById(user.appUser.id, viewId);
+    const { error } = await this.client.from("developer_analytics_saved_views").delete().eq("id", viewId);
+    if (error) {
+      throw problem(500, "developer_analytics_saved_view_delete_failed", "Saved analytics view could not be deleted.", error.message);
+    }
+  }
+
+  async getDeveloperStudioAnalytics(
+    token: string,
+    studioId: string,
+    query: { from?: string | null; to?: string | null; descriptors?: string[] } = {},
+  ): Promise<DeveloperAnalyticsResponse> {
+    const user = await this.requireUser(token);
+    await this.requireStudioAccess(user.appUser.id, studioId);
+    const range = this.resolveDeveloperAnalyticsRange(query.from, query.to);
+    return {
+      range,
+      metrics: await this.buildDeveloperAnalyticsMetrics("studio", studioId, range, query.descriptors),
+    };
+  }
+
   async createStudio(token: string, input: StudioMutationRequest): Promise<StudioResponse> {
     const user = await this.requireUser(token);
     if (!this.canCreateStudio(user.roles)) {
@@ -3681,6 +4152,20 @@ export class WorkerAppService {
     const user = await this.requireUser(token);
     return {
       title: await this.getDeveloperTitleDetails(user.appUser.id, titleId)
+    };
+  }
+
+  async getDeveloperTitleAnalytics(
+    token: string,
+    titleId: string,
+    query: { from?: string | null; to?: string | null; descriptors?: string[] } = {},
+  ): Promise<DeveloperAnalyticsResponse> {
+    const user = await this.requireUser(token);
+    await this.requireDeveloperTitleAccess(user.appUser.id, titleId);
+    const range = this.resolveDeveloperAnalyticsRange(query.from, query.to);
+    return {
+      range,
+      metrics: await this.buildDeveloperAnalyticsMetrics("title", titleId, range, query.descriptors),
     };
   }
 
@@ -5408,6 +5893,306 @@ export class WorkerAppService {
     );
   }
 
+  private resolveDeveloperAnalyticsRange(from?: string | null, to?: string | null): DeveloperAnalyticsResponse["range"] {
+    const now = new Date();
+    const resolvedTo = to ? new Date(to) : now;
+    const resolvedFrom = from ? new Date(from) : new Date(resolvedTo.getTime() - developerAnalyticsDefaultRangeMs);
+
+    if (Number.isNaN(resolvedFrom.getTime()) || Number.isNaN(resolvedTo.getTime())) {
+      throw validationProblem({
+        range: ["Analytics range values must be valid ISO 8601 date-times."],
+      });
+    }
+
+    if (resolvedFrom.getTime() > resolvedTo.getTime()) {
+      throw validationProblem({
+        range: ["Analytics range start must be earlier than or equal to the end."],
+      });
+    }
+
+    return {
+      from: resolvedFrom.toISOString(),
+      to: resolvedTo.toISOString(),
+    };
+  }
+
+  private async buildDeveloperAnalyticsMetrics(
+    subjectScope: DeveloperAnalyticsSubjectScope,
+    subjectId: string,
+    range: DeveloperAnalyticsResponse["range"],
+    descriptors?: string[],
+  ): Promise<DeveloperAnalyticsMetric[]> {
+    const normalizedDescriptors = (descriptors ?? []).map((descriptor) => descriptor.trim()).filter(Boolean);
+    const availableMetricTypes = await this.getAnalyticsEventTypes(subjectScope);
+    if (availableMetricTypes.length === 0) {
+      return [];
+    }
+
+    const selectedMetricTypes =
+      normalizedDescriptors.length > 0
+        ? availableMetricTypes.filter((type) => normalizedDescriptors.includes(type.descriptor))
+        : availableMetricTypes;
+    if (selectedMetricTypes.length === 0) {
+      return [];
+    }
+
+    const metricTypeByDescriptor = new Map(availableMetricTypes.map((type) => [type.descriptor, type]));
+    const dependencyDescriptors = this.collectDeveloperAnalyticsDependencyDescriptors(selectedMetricTypes);
+    const dependencyTypes = [...dependencyDescriptors]
+      .map((descriptor) => metricTypeByDescriptor.get(descriptor) ?? null)
+      .filter((type): type is AnalyticsEventTypeRow => Boolean(type));
+
+    const currentRows = await this.getAnalyticsEventsForScope(subjectScope, subjectId, dependencyTypes.map((type) => type.id), range);
+    const currentStats = this.buildDeveloperAnalyticsMetricStats(dependencyTypes, currentRows);
+
+    const needsComparison = selectedMetricTypes.some((type) => type.metric_kind === "conversion_rate_comparison");
+    const previousStats = needsComparison
+      ? this.buildDeveloperAnalyticsMetricStats(
+          dependencyTypes,
+          await this.getAnalyticsEventsForScope(subjectScope, subjectId, dependencyTypes.map((type) => type.id), getPreviousDeveloperAnalyticsRange(range)),
+        )
+      : new Map<string, AnalyticsMetricStats>();
+
+    return selectedMetricTypes.map((metricType) =>
+      this.createDeveloperAnalyticsMetricResult(metricType, currentStats, previousStats),
+    );
+  }
+
+  private collectDeveloperAnalyticsDependencyDescriptors(metricTypes: readonly AnalyticsEventTypeRow[]): Set<string> {
+    const descriptors = new Set<string>();
+
+    metricTypes.forEach((type) => {
+      if (type.metric_kind === "tracked_event") {
+        descriptors.add(type.descriptor);
+        return;
+      }
+
+      const config = parseAnalyticsDerivedCalculationConfig(type);
+      [config.numeratorDescriptor, config.denominatorDescriptor, config.addedDescriptor, config.removedDescriptor]
+        .filter((descriptor): descriptor is string => Boolean(descriptor))
+        .forEach((descriptor) => descriptors.add(descriptor));
+    });
+
+    return descriptors;
+  }
+
+  private buildDeveloperAnalyticsMetricStats(
+    metricTypes: readonly AnalyticsEventTypeRow[],
+    rows: readonly AnalyticsEventRow[],
+  ): Map<string, AnalyticsMetricStats> {
+    const rowsByEventTypeId = rows.reduce<Map<string, AnalyticsEventRow[]>>((collection, row) => {
+      const existing = collection.get(row.event_type_id) ?? [];
+      existing.push(row);
+      collection.set(row.event_type_id, existing);
+      return collection;
+    }, new Map<string, AnalyticsEventRow[]>());
+
+    return metricTypes.reduce<Map<string, AnalyticsMetricStats>>((collection, metricType) => {
+      const matchingRows = rowsByEventTypeId.get(metricType.id) ?? [];
+      const value =
+        metricType.aggregation_kind === "unique_actor_count"
+          ? new Set(matchingRows.map((row) => row.actor_user_id ?? row.actor_hash ?? row.id)).size
+          : matchingRows.length;
+      const lastOccurredAt = matchingRows
+        .map((row) => row.occurred_at)
+        .sort((left, right) => right.localeCompare(left))[0] ?? null;
+
+      collection.set(metricType.descriptor, {
+        value,
+        lastOccurredAt,
+      });
+      return collection;
+    }, new Map<string, AnalyticsMetricStats>());
+  }
+
+  private createDeveloperAnalyticsMetricResult(
+    metricType: AnalyticsEventTypeRow,
+    currentStats: ReadonlyMap<string, AnalyticsMetricStats>,
+    previousStats: ReadonlyMap<string, AnalyticsMetricStats>,
+  ): DeveloperAnalyticsMetric {
+    if (metricType.metric_kind === "tracked_event") {
+      const stats = currentStats.get(metricType.descriptor) ?? { value: 0, lastOccurredAt: null };
+      return mapDeveloperAnalyticsMetric(metricType, stats.value, stats.lastOccurredAt);
+    }
+
+    if (metricType.metric_kind === "net_change") {
+      const config = parseAnalyticsDerivedCalculationConfig(metricType);
+      const added = config.addedDescriptor ? currentStats.get(config.addedDescriptor) : null;
+      const removed = config.removedDescriptor ? currentStats.get(config.removedDescriptor) : null;
+      const value = (added?.value ?? 0) - (removed?.value ?? 0);
+      const lastOccurredAt = [added?.lastOccurredAt ?? null, removed?.lastOccurredAt ?? null]
+        .filter((candidate): candidate is string => Boolean(candidate))
+        .sort((left, right) => right.localeCompare(left))[0] ?? null;
+      return mapDeveloperAnalyticsMetric(metricType, value, lastOccurredAt);
+    }
+
+    const config = parseAnalyticsDerivedCalculationConfig(metricType);
+    const numerator = config.numeratorDescriptor ? currentStats.get(config.numeratorDescriptor) : null;
+    const denominator = config.denominatorDescriptor ? currentStats.get(config.denominatorDescriptor) : null;
+    const denominatorValue = denominator?.value ?? 0;
+    const value = denominatorValue > 0 ? ((numerator?.value ?? 0) / denominatorValue) * 100 : 0;
+    const lastOccurredAt = [numerator?.lastOccurredAt ?? null, denominator?.lastOccurredAt ?? null]
+      .filter((candidate): candidate is string => Boolean(candidate))
+      .sort((left, right) => right.localeCompare(left))[0] ?? null;
+
+    if (metricType.metric_kind === "conversion_rate") {
+      return mapDeveloperAnalyticsMetric(metricType, value, lastOccurredAt, {
+        statusMessage:
+          denominatorValue === 0
+            ? "This rate will appear after more people open this page in the selected time range."
+            : null,
+      });
+    }
+
+    const previousNumerator = config.numeratorDescriptor ? previousStats.get(config.numeratorDescriptor) : null;
+    const previousDenominator = config.denominatorDescriptor ? previousStats.get(config.denominatorDescriptor) : null;
+    const previousDenominatorValue = previousDenominator?.value ?? 0;
+    const previousValue = previousDenominatorValue > 0 ? ((previousNumerator?.value ?? 0) / previousDenominatorValue) * 100 : 0;
+
+    return mapDeveloperAnalyticsMetric(metricType, value, lastOccurredAt, {
+      secondaryValue:
+        denominatorValue === 0
+          ? null
+          : previousDenominatorValue === 0
+            ? "A comparison will appear after the earlier matching time range has a few title views."
+            : formatSignedPercentagePointChange(value - previousValue),
+      statusMessage:
+        denominatorValue === 0
+          ? "This rate will appear after more people open this page in the selected time range."
+          : null,
+    });
+  }
+
+  private async getAnalyticsEventsForScope(
+    subjectScope: DeveloperAnalyticsSubjectScope,
+    subjectId: string,
+    eventTypeIds: string[],
+    range: DeveloperAnalyticsResponse["range"],
+  ): Promise<AnalyticsEventRow[]> {
+    if (eventTypeIds.length === 0) {
+      return [];
+    }
+
+    let query = this.client
+      .from("analytics_events")
+      .select("*")
+      .in("event_type_id", eventTypeIds)
+      .gte("occurred_at", range.from)
+      .lte("occurred_at", range.to);
+
+    query = subjectScope === "title" ? query.eq("title_id", subjectId) : query.eq("studio_id", subjectId);
+    const { data, error } = await query.order("occurred_at", { ascending: false });
+    if (error) {
+      throw problem(500, "analytics_event_lookup_failed", "Analytics metric lookup failed.", error.message);
+    }
+
+    return (data as AnalyticsEventRow[] | null) ?? [];
+  }
+
+  private async getDeveloperAnalyticsSavedViewsByUserAndScope(
+    userId: string,
+    subjectScope: DeveloperAnalyticsSubjectScope,
+  ): Promise<DeveloperAnalyticsSavedViewRow[]> {
+    const { data, error } = await this.client
+      .from("developer_analytics_saved_views")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("subject_scope", subjectScope)
+      .order("updated_at", { ascending: false });
+    if (error) {
+      throw problem(500, "developer_analytics_saved_view_lookup_failed", "Saved analytics views could not be loaded.", error.message);
+    }
+
+    return (data as DeveloperAnalyticsSavedViewRow[] | null) ?? [];
+  }
+
+  private async getDeveloperAnalyticsSavedViewById(
+    userId: string,
+    viewId: string,
+  ): Promise<DeveloperAnalyticsSavedViewRow> {
+    const { data, error } = await this.client
+      .from("developer_analytics_saved_views")
+      .select("*")
+      .eq("id", viewId)
+      .eq("user_id", userId)
+      .limit(1);
+    if (error) {
+      throw problem(500, "developer_analytics_saved_view_lookup_failed", "Saved analytics views could not be loaded.", error.message);
+    }
+
+    const row = (data as DeveloperAnalyticsSavedViewRow[] | null)?.[0] ?? null;
+    if (!row) {
+      throw problem(404, "developer_analytics_saved_view_not_found", "Saved analytics view not found.", "That saved analytics view is not available for your account.");
+    }
+
+    return row;
+  }
+
+  private async validateDeveloperAnalyticsSavedViewInput(
+    input: UpsertDeveloperAnalyticsSavedViewRequest,
+  ): Promise<UpsertDeveloperAnalyticsSavedViewRequest> {
+    const errors: Record<string, string[]> = {};
+    const trimmedName = input.name.trim();
+    if (!trimmedName) {
+      errors.name = ["Give this analytics view a name."];
+    } else if (trimmedName.length > 120) {
+      errors.name = ["Use 120 characters or fewer for the view name."];
+    }
+
+    if (input.subjectScope !== "studio" && input.subjectScope !== "title") {
+      errors.subjectScope = ["Choose whether this saved view is for studio or title analytics."];
+    }
+
+    const panels = normalizeDeveloperAnalyticsSavedViewPanels(input.panels);
+    if (panels.length === 0) {
+      errors.panels = ["Add at least one analytics panel before saving this view."];
+    }
+
+    const duplicateDescriptors = panels
+      .map((panel) => panel.descriptor)
+      .filter((descriptor, index, descriptors) => descriptors.indexOf(descriptor) !== index);
+    if (duplicateDescriptors.length > 0) {
+      errors.panels = ["Each analytics metric can only appear once in a saved view."];
+    }
+
+    const availableDescriptors =
+      input.subjectScope === "studio" || input.subjectScope === "title"
+        ? new Set((await this.getAnalyticsEventTypes(input.subjectScope)).map((eventType) => eventType.descriptor))
+        : new Set<string>();
+
+    panels.forEach((panel, index) => {
+      if (!panel.descriptor.trim()) {
+        errors[`panels.${index}.descriptor`] = ["Choose an analytics metric for each panel."];
+      } else if (!availableDescriptors.has(panel.descriptor)) {
+        errors[`panels.${index}.descriptor`] = ["This analytics metric is not available for the selected saved view type."];
+      }
+
+      if (panel.rangePresetId) {
+        if (!developerAnalyticsSavedViewRangePresetIds.has(panel.rangePresetId)) {
+          errors[`panels.${index}.rangePresetId`] = ["Choose a valid saved date range preset."];
+        }
+      } else {
+        const from = panel.customFrom ? new Date(panel.customFrom) : null;
+        const to = panel.customTo ? new Date(panel.customTo) : null;
+        if (!from || Number.isNaN(from.getTime()) || !to || Number.isNaN(to.getTime())) {
+          errors[`panels.${index}.customRange`] = ["Choose a valid custom start and end date for each custom range."];
+        } else if (from.getTime() > to.getTime()) {
+          errors[`panels.${index}.customRange`] = ["Choose a custom start date that comes before the end date."];
+        }
+      }
+    });
+
+    if (Object.keys(errors).length > 0) {
+      throw validationProblem(errors);
+    }
+
+    return {
+      subjectScope: input.subjectScope,
+      name: trimmedName,
+      panels,
+    };
+  }
+
   private async requireDeveloperTitleAccess(userId: string, titleId: string): Promise<TitleRow> {
     const title = await this.getTitleById(titleId);
     await this.requireStudioAccess(userId, title.studio_id);
@@ -6585,6 +7370,18 @@ export class WorkerAppService {
       if (error) {
         throw problem(500, "player_collection_mutation_failed", "Player collection update failed.", error.message);
       }
+
+      await this.tryRecordDeveloperAnalyticsEvent({
+        descriptor: kind === "library" ? "title_added_to_library" : "title_wishlisted",
+        studioId: title.studio_id,
+        titleId: title.id,
+        actorUserId: userId,
+        occurredAt: new Date().toISOString(),
+        metadata: {
+          source: "player_collection_mutation",
+          included: true,
+        },
+      });
     }
 
     if (!included && alreadyIncluded) {
@@ -6592,6 +7389,18 @@ export class WorkerAppService {
       if (error) {
         throw problem(500, "player_collection_mutation_failed", "Player collection update failed.", error.message);
       }
+
+      await this.tryRecordDeveloperAnalyticsEvent({
+        descriptor: kind === "library" ? "title_removed_from_library" : "title_unwishlisted",
+        studioId: title.studio_id,
+        titleId: title.id,
+        actorUserId: userId,
+        occurredAt: new Date().toISOString(),
+        metadata: {
+          source: "player_collection_mutation",
+          included: false,
+        },
+      });
     }
 
     return mapPlayerCollectionMutation(title.id, included, alreadyIncluded === included);
@@ -6746,6 +7555,17 @@ export class WorkerAppService {
       if (error) {
         throw problem(500, "player_followed_studio_mutation_failed", "Player followed studio update failed.", error.message);
       }
+
+      await this.tryRecordDeveloperAnalyticsEvent({
+        descriptor: "studio_followed",
+        studioId,
+        actorUserId: userId,
+        occurredAt: new Date().toISOString(),
+        metadata: {
+          source: "player_follow_mutation",
+          included: true,
+        },
+      });
     }
 
     if (!included && alreadyIncluded) {
@@ -6753,6 +7573,17 @@ export class WorkerAppService {
       if (error) {
         throw problem(500, "player_followed_studio_mutation_failed", "Player followed studio update failed.", error.message);
       }
+
+      await this.tryRecordDeveloperAnalyticsEvent({
+        descriptor: "studio_unfollowed",
+        studioId,
+        actorUserId: userId,
+        occurredAt: new Date().toISOString(),
+        metadata: {
+          source: "player_follow_mutation",
+          included: false,
+        },
+      });
     }
 
     return mapPlayerStudioFollowMutation(studioId, included, alreadyIncluded === included);

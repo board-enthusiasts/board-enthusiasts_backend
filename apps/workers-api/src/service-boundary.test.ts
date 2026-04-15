@@ -73,6 +73,24 @@ type TitleRow = {
   updated_at: string;
 };
 
+type PlayerLibraryRow = {
+  user_id: string;
+  title_id: string;
+  created_at: string;
+};
+
+type PlayerWishlistRow = {
+  user_id: string;
+  title_id: string;
+  created_at: string;
+};
+
+type PlayerFollowedStudioRow = {
+  user_id: string;
+  studio_id: string;
+  created_at: string;
+};
+
 type UserNotificationRow = {
   id: string;
   user_id: string;
@@ -158,6 +176,57 @@ type TitleGetClickRow = {
   last_country_code: string | null;
 };
 
+type AnalyticsEventTypeRow = {
+  id: string;
+  descriptor: string;
+  display_name: string;
+  internal_description: string | null;
+  public_description: string | null;
+  public_tooltip: string | null;
+  subject_scope: "studio" | "title";
+  aggregation_kind: "event_count" | "unique_actor_count";
+  metric_kind: "tracked_event" | "conversion_rate" | "conversion_rate_comparison" | "net_change";
+  value_format: "number" | "percentage";
+  supports_date_range: boolean;
+  calculation_config: Record<string, unknown> | null;
+  display_order: number;
+  is_active: boolean;
+  is_public: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+type AnalyticsEventRow = {
+  id: string;
+  event_type_id: string;
+  studio_id: string | null;
+  title_id: string | null;
+  actor_user_id: string | null;
+  actor_hash: string | null;
+  occurred_at: string;
+  surface: string | null;
+  app_environment: string | null;
+  country_code: string | null;
+  metadata: Record<string, unknown> | null;
+};
+
+type DeveloperAnalyticsSavedViewRow = {
+  id: string;
+  user_id: string;
+  subject_scope: "studio" | "title";
+  name: string;
+  configuration: {
+    panels?: Array<{
+      descriptor: string;
+      rangePresetId: string | null;
+      customFrom: string | null;
+      customTo: string | null;
+    }>;
+  } | null;
+  created_at: string;
+  updated_at: string;
+};
+
 type WorkerAppServicePrivateTestAccess = {
   getDeveloperTitleDetails(userId: string, titleId: string): Promise<Record<string, unknown>>;
   getUsersByIds(userIds: string[]): Promise<AppUserRow[]>;
@@ -174,10 +243,16 @@ const tables: {
   app_user_roles: AppUserRoleRow[];
   user_board_profiles: BoardProfileRow[];
   titles: TitleRow[];
+  player_library_titles: PlayerLibraryRow[];
+  player_wishlist_titles: PlayerWishlistRow[];
+  player_followed_studios: PlayerFollowedStudioRow[];
   user_notifications: UserNotificationRow[];
   catalog_media_entries: CatalogMediaEntryRow[];
   be_home_presence_sessions: BeHomePresenceSessionRow[];
   be_home_device_identities: BeHomeDeviceIdentityRow[];
+  analytics_event_types: AnalyticsEventTypeRow[];
+  analytics_events: AnalyticsEventRow[];
+  developer_analytics_saved_views: DeveloperAnalyticsSavedViewRow[];
   title_detail_views: TitleDetailViewRow[];
   title_get_clicks: TitleGetClickRow[];
 } = {
@@ -187,10 +262,16 @@ const tables: {
   app_user_roles: [],
   user_board_profiles: [],
   titles: [],
+  player_library_titles: [],
+  player_wishlist_titles: [],
+  player_followed_studios: [],
   user_notifications: [],
   catalog_media_entries: [],
   be_home_presence_sessions: [],
   be_home_device_identities: [],
+  analytics_event_types: [],
+  analytics_events: [],
+  developer_analytics_saved_views: [],
   title_detail_views: [],
   title_get_clicks: [],
 };
@@ -202,12 +283,330 @@ function resetTables() {
   tables.app_user_roles = [];
   tables.user_board_profiles = [];
   tables.titles = [];
+  tables.player_library_titles = [];
+  tables.player_wishlist_titles = [];
+  tables.player_followed_studios = [];
   tables.user_notifications = [];
   tables.catalog_media_entries = [];
   tables.be_home_presence_sessions = [];
   tables.be_home_device_identities = [];
+  tables.analytics_event_types = [];
+  tables.analytics_events = [];
+  tables.developer_analytics_saved_views = [];
   tables.title_detail_views = [];
   tables.title_get_clicks = [];
+}
+
+function seedAnalyticsEventTypes(): void {
+  const now = "2026-04-14T00:00:00Z";
+  tables.analytics_event_types.push(
+    {
+      id: "metric-studio-followed",
+      descriptor: "studio_followed",
+      display_name: "Studio follows",
+      internal_description: "Studio follow actions.",
+      public_description: "Studio follows in range.",
+      public_tooltip: "Studio follows tooltip.",
+      subject_scope: "studio",
+      aggregation_kind: "event_count",
+      metric_kind: "tracked_event",
+      value_format: "number",
+      supports_date_range: true,
+      calculation_config: null,
+      display_order: 10,
+      is_active: true,
+      is_public: true,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "metric-studio-unfollowed",
+      descriptor: "studio_unfollowed",
+      display_name: "Studio unfollows",
+      internal_description: "Studio unfollow actions.",
+      public_description: "Studio unfollows in range.",
+      public_tooltip: "Studio unfollows tooltip.",
+      subject_scope: "studio",
+      aggregation_kind: "event_count",
+      metric_kind: "tracked_event",
+      value_format: "number",
+      supports_date_range: true,
+      calculation_config: null,
+      display_order: 20,
+      is_active: true,
+      is_public: true,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "metric-title-detail-viewed",
+      descriptor: "title_detail_viewed",
+      display_name: "Title detail views",
+      internal_description: "Unique viewers.",
+      public_description: "Unique viewers in range.",
+      public_tooltip: "Unique title viewers tooltip.",
+      subject_scope: "title",
+      aggregation_kind: "unique_actor_count",
+      metric_kind: "tracked_event",
+      value_format: "number",
+      supports_date_range: true,
+      calculation_config: null,
+      display_order: 10,
+      is_active: true,
+      is_public: true,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "metric-title-get-clicked",
+      descriptor: "title_get_clicked",
+      display_name: "Get Title clicks",
+      internal_description: "Unique get clicks.",
+      public_description: "Unique get clicks in range.",
+      public_tooltip: "Unique get clicks tooltip.",
+      subject_scope: "title",
+      aggregation_kind: "unique_actor_count",
+      metric_kind: "tracked_event",
+      value_format: "number",
+      supports_date_range: true,
+      calculation_config: null,
+      display_order: 20,
+      is_active: true,
+      is_public: true,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "metric-title-wishlisted",
+      descriptor: "title_wishlisted",
+      display_name: "Added to wishlist",
+      internal_description: "Wishlist adds.",
+      public_description: "Wishlist adds in range.",
+      public_tooltip: "Wishlist adds tooltip.",
+      subject_scope: "title",
+      aggregation_kind: "event_count",
+      metric_kind: "tracked_event",
+      value_format: "number",
+      supports_date_range: true,
+      calculation_config: null,
+      display_order: 30,
+      is_active: true,
+      is_public: true,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "metric-title-unwishlisted",
+      descriptor: "title_unwishlisted",
+      display_name: "Removed from wishlist",
+      internal_description: "Wishlist removals.",
+      public_description: "Wishlist removals in range.",
+      public_tooltip: "Wishlist removals tooltip.",
+      subject_scope: "title",
+      aggregation_kind: "event_count",
+      metric_kind: "tracked_event",
+      value_format: "number",
+      supports_date_range: true,
+      calculation_config: null,
+      display_order: 40,
+      is_active: true,
+      is_public: true,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "metric-title-added-to-library",
+      descriptor: "title_added_to_library",
+      display_name: "Added to library",
+      internal_description: "Library adds.",
+      public_description: "Library adds in range.",
+      public_tooltip: "Library adds tooltip.",
+      subject_scope: "title",
+      aggregation_kind: "event_count",
+      metric_kind: "tracked_event",
+      value_format: "number",
+      supports_date_range: true,
+      calculation_config: null,
+      display_order: 50,
+      is_active: true,
+      is_public: true,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "metric-title-removed-from-library",
+      descriptor: "title_removed_from_library",
+      display_name: "Removed from library",
+      internal_description: "Library removals.",
+      public_description: "Library removals in range.",
+      public_tooltip: "Library removals tooltip.",
+      subject_scope: "title",
+      aggregation_kind: "event_count",
+      metric_kind: "tracked_event",
+      value_format: "number",
+      supports_date_range: true,
+      calculation_config: null,
+      display_order: 60,
+      is_active: true,
+      is_public: true,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "metric-title-view-to-wishlist-conversion",
+      descriptor: "title_view_to_wishlist_conversion",
+      display_name: "Wishlist conversion",
+      internal_description: "Wishlist conversion in range.",
+      public_description: "The share of visitors who added this title to their wishlist after opening it during the selected time range.",
+      public_tooltip: "Wishlist conversion tooltip.",
+      subject_scope: "title",
+      aggregation_kind: "event_count",
+      metric_kind: "conversion_rate",
+      value_format: "percentage",
+      supports_date_range: true,
+      calculation_config: {
+        numeratorDescriptor: "title_wishlisted",
+        denominatorDescriptor: "title_detail_viewed",
+      },
+      display_order: 25,
+      is_active: true,
+      is_public: true,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "metric-title-view-to-wishlist-conversion-change",
+      descriptor: "title_view_to_wishlist_conversion_change",
+      display_name: "Wishlist conversion change",
+      internal_description: "Wishlist conversion change in range.",
+      public_description: "How the wishlist conversion rate changed compared with the previous matching time range.",
+      public_tooltip: "Wishlist conversion change tooltip.",
+      subject_scope: "title",
+      aggregation_kind: "event_count",
+      metric_kind: "conversion_rate_comparison",
+      value_format: "percentage",
+      supports_date_range: true,
+      calculation_config: {
+        numeratorDescriptor: "title_wishlisted",
+        denominatorDescriptor: "title_detail_viewed",
+      },
+      display_order: 26,
+      is_active: true,
+      is_public: true,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "metric-title-wishlist-net-change",
+      descriptor: "title_wishlist_net_change",
+      display_name: "Wishlist net change",
+      internal_description: "Wishlist net change in range.",
+      public_description: "The overall change in wishlists during the selected time range after additions and removals are balanced together.",
+      public_tooltip: "Wishlist net change tooltip.",
+      subject_scope: "title",
+      aggregation_kind: "event_count",
+      metric_kind: "net_change",
+      value_format: "number",
+      supports_date_range: true,
+      calculation_config: {
+        addedDescriptor: "title_wishlisted",
+        removedDescriptor: "title_unwishlisted",
+      },
+      display_order: 45,
+      is_active: true,
+      is_public: true,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "metric-title-view-to-library-conversion",
+      descriptor: "title_view_to_library_conversion",
+      display_name: "Library conversion",
+      internal_description: "Library conversion in range.",
+      public_description: "The share of visitors who added this title to their library after opening it during the selected time range.",
+      public_tooltip: "Library conversion tooltip.",
+      subject_scope: "title",
+      aggregation_kind: "event_count",
+      metric_kind: "conversion_rate",
+      value_format: "percentage",
+      supports_date_range: true,
+      calculation_config: {
+        numeratorDescriptor: "title_added_to_library",
+        denominatorDescriptor: "title_detail_viewed",
+      },
+      display_order: 55,
+      is_active: true,
+      is_public: true,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "metric-title-view-to-library-conversion-change",
+      descriptor: "title_view_to_library_conversion_change",
+      display_name: "Library conversion change",
+      internal_description: "Library conversion change in range.",
+      public_description: "How the library conversion rate changed compared with the previous matching time range.",
+      public_tooltip: "Library conversion change tooltip.",
+      subject_scope: "title",
+      aggregation_kind: "event_count",
+      metric_kind: "conversion_rate_comparison",
+      value_format: "percentage",
+      supports_date_range: true,
+      calculation_config: {
+        numeratorDescriptor: "title_added_to_library",
+        denominatorDescriptor: "title_detail_viewed",
+      },
+      display_order: 56,
+      is_active: true,
+      is_public: true,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "metric-title-library-net-change",
+      descriptor: "title_library_net_change",
+      display_name: "Library net change",
+      internal_description: "Library net change in range.",
+      public_description: "The overall change in library adds during the selected time range after additions and removals are balanced together.",
+      public_tooltip: "Library net change tooltip.",
+      subject_scope: "title",
+      aggregation_kind: "event_count",
+      metric_kind: "net_change",
+      value_format: "number",
+      supports_date_range: true,
+      calculation_config: {
+        addedDescriptor: "title_added_to_library",
+        removedDescriptor: "title_removed_from_library",
+      },
+      display_order: 65,
+      is_active: true,
+      is_public: true,
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: "metric-studio-follow-net-change",
+      descriptor: "studio_follow_net_change",
+      display_name: "Follower net change",
+      internal_description: "Follower net change in range.",
+      public_description: "The overall change in followers during the selected time range after follows and unfollows are balanced together.",
+      public_tooltip: "Follower net change tooltip.",
+      subject_scope: "studio",
+      aggregation_kind: "event_count",
+      metric_kind: "net_change",
+      value_format: "number",
+      supports_date_range: true,
+      calculation_config: {
+        addedDescriptor: "studio_followed",
+        removedDescriptor: "studio_unfollowed",
+      },
+      display_order: 30,
+      is_active: true,
+      is_public: true,
+      created_at: now,
+      updated_at: now,
+    },
+  );
 }
 
 const supabaseAuthMocks = vi.hoisted(() => ({
@@ -220,6 +619,8 @@ const supabaseAuthMocks = vi.hoisted(() => ({
 function createQueryBuilder(tableName: keyof typeof tables) {
   let filters: Array<{ column: string; value: unknown }> = [];
   let inclusionFilters: Array<{ column: string; values: unknown[] }> = [];
+  let lowerBoundFilters: Array<{ column: string; value: unknown }> = [];
+  let upperBoundFilters: Array<{ column: string; value: unknown }> = [];
   let orderBy: { column: string; ascending: boolean } | null = null;
   let pendingUpdate: Record<string, unknown> | null = null;
 
@@ -227,7 +628,9 @@ function createQueryBuilder(tableName: keyof typeof tables) {
     const filtered = rows.filter(
       (row) =>
         filters.every((filter) => row[filter.column] === filter.value) &&
-        inclusionFilters.every((filter) => filter.values.includes(row[filter.column])),
+        inclusionFilters.every((filter) => filter.values.includes(row[filter.column])) &&
+        lowerBoundFilters.every((filter) => String(row[filter.column] ?? "") >= String(filter.value ?? "")) &&
+        upperBoundFilters.every((filter) => String(row[filter.column] ?? "") <= String(filter.value ?? "")),
     );
 
     if (!orderBy) {
@@ -290,6 +693,14 @@ function createQueryBuilder(tableName: keyof typeof tables) {
       return builder;
     },
     single() {
+      if (pendingUpdate) {
+        for (const row of applyFilters(tables[tableName] as Array<Record<string, unknown>>)) {
+          Object.assign(row, pendingUpdate);
+        }
+
+        pendingUpdate = null;
+      }
+
       const rows = applyFilters(tables[tableName] as Array<Record<string, unknown>>);
       return Promise.resolve({
         data: (rows[0] ?? (tables[tableName] as Array<Record<string, unknown>>).slice(-1)[0] ?? null),
@@ -304,6 +715,14 @@ function createQueryBuilder(tableName: keyof typeof tables) {
       inclusionFilters = [...inclusionFilters, { column, values }];
       return builder;
     },
+    gte(column: string, value: unknown) {
+      lowerBoundFilters = [...lowerBoundFilters, { column, value }];
+      return builder;
+    },
+    lte(column: string, value: unknown) {
+      upperBoundFilters = [...upperBoundFilters, { column, value }];
+      return builder;
+    },
     order(column: string, options?: { ascending?: boolean }) {
       orderBy = { column, ascending: options?.ascending ?? true };
       return builder;
@@ -314,14 +733,19 @@ function createQueryBuilder(tableName: keyof typeof tables) {
       return builder;
     },
     delete() {
-      return {
+      const deleteBuilder = {
         eq(column: string, value: unknown) {
+          filters = [...filters, { column, value }];
+          return deleteBuilder;
+        },
+        then(onFulfilled: (value: { error: null }) => unknown, onRejected?: (reason: unknown) => unknown) {
           const rows = tables[tableName] as Array<Record<string, unknown>>;
-          const kept = rows.filter((row) => row[column] !== value);
+          const kept = rows.filter((row) => !applyFilters([row]).length);
           rows.splice(0, rows.length, ...kept);
-          return Promise.resolve({ error: null });
+          return Promise.resolve({ error: null }).then(onFulfilled, onRejected);
         },
       };
+      return deleteBuilder;
     },
     update(payload: Record<string, unknown>) {
       pendingUpdate = payload;
@@ -1262,6 +1686,7 @@ describe("WorkerAppService.recordAnalyticsEvent", () => {
   });
 
   it("records unique title detail views once per title and IP address", async () => {
+    seedAnalyticsEventTypes();
     const service = new WorkerAppService({
       APP_ENV: "staging",
       SUPABASE_URL: "https://example.supabase.co",
@@ -1328,9 +1753,17 @@ describe("WorkerAppService.recordAnalyticsEvent", () => {
       last_country_code: "CA",
     });
     expect(tables.title_detail_views[0]!.viewer_hash).not.toBe("203.0.113.10");
+    expect(tables.analytics_events).toHaveLength(3);
+    expect(tables.analytics_events[0]).toMatchObject({
+      event_type_id: "metric-title-detail-viewed",
+      title_id: "title-1",
+      app_environment: "staging",
+      country_code: "US",
+    });
   });
 
   it("records unique BE Home title detail views once per title and Board device", async () => {
+    seedAnalyticsEventTypes();
     const service = new WorkerAppService({
       APP_ENV: "staging",
       SUPABASE_URL: "https://example.supabase.co",
@@ -1415,9 +1848,17 @@ describe("WorkerAppService.recordAnalyticsEvent", () => {
       last_country_code: "CA",
     });
     expect(tables.title_detail_views[0]!.viewer_hash).not.toBe("board-install-1");
+    expect(tables.analytics_events).toHaveLength(3);
+    expect(tables.analytics_events[0]).toMatchObject({
+      event_type_id: "metric-title-detail-viewed",
+      title_id: "title-1",
+      app_environment: "staging",
+      country_code: "US",
+    });
   });
 
   it("records unique Get Title clicks once per title and visitor id when available", async () => {
+    seedAnalyticsEventTypes();
     const service = new WorkerAppService({
       APP_ENV: "staging",
       SUPABASE_URL: "https://example.supabase.co",
@@ -1485,9 +1926,17 @@ describe("WorkerAppService.recordAnalyticsEvent", () => {
     });
     expect(tables.title_get_clicks[0]!.viewer_hash).not.toBe("visitor-1");
     expect(new Date(tables.title_get_clicks[0]!.last_clicked_at).getTime()).toBeGreaterThanOrEqual(new Date(tables.title_get_clicks[0]!.first_clicked_at).getTime());
+    expect(tables.analytics_events).toHaveLength(3);
+    expect(tables.analytics_events[0]).toMatchObject({
+      event_type_id: "metric-title-get-clicked",
+      title_id: "title-1",
+      surface: "quick-view",
+      country_code: "US",
+    });
   });
 
   it("falls back to IP-based uniqueness for Get Title clicks when visitor ids are unavailable", async () => {
+    seedAnalyticsEventTypes();
     const service = new WorkerAppService({
       APP_ENV: "staging",
       SUPABASE_URL: "https://example.supabase.co",
@@ -1528,6 +1977,7 @@ describe("WorkerAppService.recordAnalyticsEvent", () => {
       surface: "title-detail",
     });
     expect(tables.title_get_clicks[0]!.viewer_hash).not.toBe("203.0.113.10");
+    expect(tables.analytics_events).toHaveLength(2);
   });
 });
 
@@ -1983,6 +2433,368 @@ describe("WorkerAppService title analytics projections", () => {
         ],
       }),
     );
+  });
+
+  it("records title collection and studio follow toggles as analytics events without breaking the primary mutation", async () => {
+    seedAnalyticsEventTypes();
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: { id: "user-1" },
+      roles: ["player"],
+    });
+    vi.spyOn(service as never, "getTitleById" as never).mockResolvedValue({
+      id: "title-1",
+      studio_id: "studio-1",
+      slug: "lantern-drift",
+      content_kind: "game",
+      lifecycle_status: "active",
+      visibility: "listed",
+      is_reported: false,
+      current_metadata_revision: 2,
+      display_name: "Lantern Drift",
+      short_description: "Guide glowing paper boats through midnight canals.",
+      description: "Tilt waterways, spin lock-gates, and weave through fireworks across the river.",
+      genre_display: "Puzzle, Family",
+      min_players: 1,
+      max_players: 4,
+      max_players_or_more: false,
+      age_rating_authority: "ESRB",
+      age_rating_value: "E",
+      min_age_years: 6,
+      current_release_id: "release-1",
+      current_release_version: "1.0.0",
+      current_release_published_at: "2026-03-08T12:00:00Z",
+      acquisition_url: "https://example.com/lantern-drift",
+      created_at: "2026-03-08T12:00:00Z",
+      updated_at: "2026-03-08T12:00:00Z",
+    });
+    vi.spyOn(service as never, "requireTitleRelease" as never).mockResolvedValue({
+      id: "release-1",
+      title_id: "title-1",
+      version: "1.0.0",
+      status: "production",
+      acquisition_url: "https://example.com/lantern-drift",
+      expires_at: null,
+      is_current: true,
+      published_at: "2026-03-08T12:00:00Z",
+      created_at: "2026-03-08T12:00:00Z",
+      updated_at: "2026-03-08T12:00:00Z",
+    });
+    vi.spyOn(service as never, "getStudioById" as never).mockResolvedValue({
+      id: "studio-1",
+      slug: "blue-harbor-games",
+      display_name: "Blue Harbor Games",
+      description: "Puzzle adventures for local game nights.",
+      avatar_url: null,
+      avatar_storage_path: null,
+      logo_url: null,
+      logo_storage_path: null,
+      banner_url: null,
+      banner_storage_path: null,
+      created_at: "2026-03-08T12:00:00Z",
+      updated_at: "2026-03-08T12:00:00Z",
+      created_by_user_id: "user-1",
+    });
+
+    await service.setPlayerWishlistState("player-token", "title-1", true);
+    await service.setPlayerWishlistState("player-token", "title-1", false);
+    await service.setPlayerLibraryState("player-token", "title-1", true);
+    await service.setPlayerLibraryState("player-token", "title-1", false);
+    await service.setPlayerStudioFollowState("player-token", "studio-1", true);
+    await service.setPlayerStudioFollowState("player-token", "studio-1", false);
+
+    expect(tables.analytics_events.map((row) => row.event_type_id)).toEqual([
+      "metric-title-wishlisted",
+      "metric-title-unwishlisted",
+      "metric-title-added-to-library",
+      "metric-title-removed-from-library",
+      "metric-studio-followed",
+      "metric-studio-unfollowed",
+    ]);
+  });
+
+  it("builds developer analytics metrics from event definitions and a requested date range", async () => {
+    seedAnalyticsEventTypes();
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    tables.analytics_events.push(
+      {
+        id: "event-1",
+        event_type_id: "metric-title-detail-viewed",
+        studio_id: "studio-1",
+        title_id: "title-1",
+        actor_user_id: null,
+        actor_hash: "viewer-a",
+        occurred_at: "2026-04-11T10:00:00Z",
+        surface: "title-detail",
+        app_environment: "production",
+        country_code: "US",
+        metadata: null,
+      },
+      {
+        id: "event-2",
+        event_type_id: "metric-title-detail-viewed",
+        studio_id: "studio-1",
+        title_id: "title-1",
+        actor_user_id: null,
+        actor_hash: "viewer-a",
+        occurred_at: "2026-04-12T10:00:00Z",
+        surface: "title-detail",
+        app_environment: "production",
+        country_code: "US",
+        metadata: null,
+      },
+      {
+        id: "event-3",
+        event_type_id: "metric-title-detail-viewed",
+        studio_id: "studio-1",
+        title_id: "title-1",
+        actor_user_id: null,
+        actor_hash: "viewer-b",
+        occurred_at: "2026-04-13T10:00:00Z",
+        surface: "title-detail",
+        app_environment: "production",
+        country_code: "CA",
+        metadata: null,
+      },
+      {
+        id: "event-4",
+        event_type_id: "metric-title-get-clicked",
+        studio_id: "studio-1",
+        title_id: "title-1",
+        actor_user_id: null,
+        actor_hash: "viewer-b",
+        occurred_at: "2026-04-13T11:00:00Z",
+        surface: "quick-view",
+        app_environment: "production",
+        country_code: "CA",
+        metadata: null,
+      },
+      {
+        id: "event-5",
+        event_type_id: "metric-title-wishlisted",
+        studio_id: "studio-1",
+        title_id: "title-1",
+        actor_user_id: "user-1",
+        actor_hash: null,
+        occurred_at: "2026-04-12T12:00:00Z",
+        surface: null,
+        app_environment: "production",
+        country_code: null,
+        metadata: null,
+      },
+      {
+        id: "event-6",
+        event_type_id: "metric-title-removed-from-library",
+        studio_id: "studio-1",
+        title_id: "title-1",
+        actor_user_id: "user-2",
+        actor_hash: null,
+        occurred_at: "2026-04-12T13:00:00Z",
+        surface: null,
+        app_environment: "production",
+        country_code: null,
+        metadata: null,
+      },
+      {
+        id: "event-7",
+        event_type_id: "metric-title-get-clicked",
+        studio_id: "studio-1",
+        title_id: "title-1",
+        actor_user_id: null,
+        actor_hash: "viewer-z",
+        occurred_at: "2026-04-01T13:00:00Z",
+        surface: "quick-view",
+        app_environment: "production",
+        country_code: null,
+        metadata: null,
+      },
+    );
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: { id: "developer-user-1" },
+      roles: ["developer"],
+    });
+    vi.spyOn(service as never, "requireDeveloperTitleAccess" as never).mockResolvedValue({
+      id: "title-1",
+      studio_id: "studio-1",
+    });
+
+    await expect(
+      service.getDeveloperTitleAnalytics("developer-token", "title-1", {
+        from: "2026-04-10T00:00:00Z",
+        to: "2026-04-14T00:00:00Z",
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        range: {
+          from: "2026-04-10T00:00:00.000Z",
+          to: "2026-04-14T00:00:00.000Z",
+        },
+        metrics: expect.arrayContaining([
+          expect.objectContaining({ descriptor: "title_detail_viewed", metricKind: "tracked_event", value: 2, lastOccurredAt: "2026-04-13T10:00:00Z", valueDisplay: "2" }),
+          expect.objectContaining({ descriptor: "title_get_clicked", metricKind: "tracked_event", value: 1, lastOccurredAt: "2026-04-13T11:00:00Z", valueDisplay: "1" }),
+          expect.objectContaining({ descriptor: "title_wishlisted", metricKind: "tracked_event", value: 1, lastOccurredAt: "2026-04-12T12:00:00Z" }),
+          expect.objectContaining({ descriptor: "title_unwishlisted", metricKind: "tracked_event", value: 0, lastOccurredAt: null }),
+          expect.objectContaining({ descriptor: "title_added_to_library", metricKind: "tracked_event", value: 0, lastOccurredAt: null }),
+          expect.objectContaining({ descriptor: "title_removed_from_library", metricKind: "tracked_event", value: 1, lastOccurredAt: "2026-04-12T13:00:00Z" }),
+          expect.objectContaining({
+            descriptor: "title_view_to_wishlist_conversion",
+            metricKind: "conversion_rate",
+            valueFormat: "percentage",
+            value: 50,
+            valueDisplay: "50%",
+            statusMessage: null,
+          }),
+          expect.objectContaining({
+            descriptor: "title_view_to_wishlist_conversion_change",
+            metricKind: "conversion_rate_comparison",
+            value: 50,
+            secondaryValue: "A comparison will appear after the earlier matching time range has a few title views.",
+          }),
+          expect.objectContaining({
+            descriptor: "title_wishlist_net_change",
+            metricKind: "net_change",
+            value: 1,
+            valueDisplay: "1",
+          }),
+          expect.objectContaining({
+            descriptor: "title_view_to_library_conversion",
+            metricKind: "conversion_rate",
+            value: 0,
+            statusMessage: null,
+          }),
+          expect.objectContaining({
+            descriptor: "title_view_to_library_conversion_change",
+            metricKind: "conversion_rate_comparison",
+            value: 0,
+            secondaryValue: "A comparison will appear after the earlier matching time range has a few title views.",
+          }),
+          expect.objectContaining({
+            descriptor: "title_library_net_change",
+            metricKind: "net_change",
+            value: -1,
+            valueDisplay: "-1",
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("stores, lists, updates, and deletes saved developer analytics views by subject scope", async () => {
+    seedAnalyticsEventTypes();
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: { id: "developer-user-1" },
+      roles: ["developer"],
+    });
+
+    const created = await service.createDeveloperAnalyticsSavedView("developer-token", {
+      subjectScope: "title",
+      name: "Launch watch",
+      panels: [
+        {
+          descriptor: "title_detail_viewed",
+          rangePresetId: "last-24-hours",
+          customFrom: null,
+          customTo: null,
+        },
+        {
+          descriptor: "title_wishlisted",
+          rangePresetId: null,
+          customFrom: "2026-04-10T00:00:00.000Z",
+          customTo: "2026-04-14T00:00:00.000Z",
+        },
+      ],
+    });
+
+    expect(created.view).toMatchObject({
+      subjectScope: "title",
+      name: "Launch watch",
+      panels: [
+        expect.objectContaining({ descriptor: "title_detail_viewed", rangePresetId: "last-24-hours" }),
+        expect.objectContaining({ descriptor: "title_wishlisted", customFrom: "2026-04-10T00:00:00.000Z" }),
+      ],
+    });
+
+    const listed = await service.listDeveloperAnalyticsSavedViews("developer-token", "title");
+    expect(listed.views).toHaveLength(1);
+    expect(listed.views[0]).toMatchObject({
+      id: created.view.id,
+      name: "Launch watch",
+    });
+
+    const updated = await service.updateDeveloperAnalyticsSavedView("developer-token", created.view.id, {
+      subjectScope: "title",
+      name: "Conversion watch",
+      panels: [
+        {
+          descriptor: "title_get_clicked",
+          rangePresetId: "this-week",
+          customFrom: null,
+          customTo: null,
+        },
+      ],
+    });
+    expect(updated.view).toMatchObject({
+      id: created.view.id,
+      name: "Conversion watch",
+      panels: [expect.objectContaining({ descriptor: "title_get_clicked", rangePresetId: "this-week" })],
+    });
+
+    await expect(service.listDeveloperAnalyticsSavedViews("developer-token", "studio")).resolves.toEqual({ views: [] });
+
+    await expect(service.deleteDeveloperAnalyticsSavedView("developer-token", created.view.id)).resolves.toBeUndefined();
+    await expect(service.listDeveloperAnalyticsSavedViews("developer-token", "title")).resolves.toEqual({ views: [] });
+  });
+
+  it("rejects saved developer analytics views with invalid metric descriptors", async () => {
+    seedAnalyticsEventTypes();
+    const service = new WorkerAppService({
+      APP_ENV: "production",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "requireUser" as never).mockResolvedValue({
+      appUser: { id: "developer-user-1" },
+      roles: ["developer"],
+    });
+
+    await expect(
+      service.createDeveloperAnalyticsSavedView("developer-token", {
+        subjectScope: "studio",
+        name: "Bad studio view",
+        panels: [
+          {
+            descriptor: "title_detail_viewed",
+            rangePresetId: "last-24-hours",
+            customFrom: null,
+            customTo: null,
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+    });
   });
 });
 

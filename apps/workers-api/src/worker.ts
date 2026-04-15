@@ -1,4 +1,9 @@
-import type { MarketingSignupRequest, UpdateUserProfileRequest, UpsertBoardProfileRequest } from "@board-enthusiasts/migration-contract";
+import type {
+  MarketingSignupRequest,
+  UpdateUserProfileRequest,
+  UpsertBoardProfileRequest,
+  UpsertDeveloperAnalyticsSavedViewRequest,
+} from "@board-enthusiasts/migration-contract";
 import { empty, json, ApiError, corsHeaders, problem, validationProblem } from "./http";
 import {
   Env,
@@ -187,6 +192,100 @@ export async function handleAnalyticsEventRoute(
     ipAddress: readCfClientIp(request),
   }), {
     status: 202,
+    headers: responseHeaders,
+  });
+}
+
+function readDeveloperAnalyticsQuery(url: URL): { from?: string | null; to?: string | null; descriptors?: string[] } {
+  const descriptors = url.searchParams.getAll("descriptor").map((value) => value.trim()).filter(Boolean);
+  return {
+    from: url.searchParams.get("from"),
+    to: url.searchParams.get("to"),
+    descriptors: descriptors.length > 0 ? descriptors : undefined,
+  };
+}
+
+function readDeveloperAnalyticsSubjectScope(url: URL): "studio" | "title" {
+  const subjectScope = url.searchParams.get("subjectScope");
+  if (subjectScope === "studio" || subjectScope === "title") {
+    return subjectScope;
+  }
+
+  throw validationProblem({
+    subjectScope: ["subjectScope must be either studio or title."],
+  });
+}
+
+export async function handleListDeveloperAnalyticsSavedViewsRoute(
+  request: Request,
+  service: Pick<WorkerAppService, "listDeveloperAnalyticsSavedViews">,
+  responseHeaders: HeadersInit,
+): Promise<Response> {
+  const url = new URL(request.url);
+  return json(await service.listDeveloperAnalyticsSavedViews(getBearerToken(request), readDeveloperAnalyticsSubjectScope(url)), {
+    headers: responseHeaders,
+  });
+}
+
+export async function handleCreateDeveloperAnalyticsSavedViewRoute(
+  request: Request,
+  service: Pick<WorkerAppService, "createDeveloperAnalyticsSavedView">,
+  responseHeaders: HeadersInit,
+): Promise<Response> {
+  return json(await service.createDeveloperAnalyticsSavedView(getBearerToken(request), await readJson<UpsertDeveloperAnalyticsSavedViewRequest>(request)), {
+    status: 201,
+    headers: responseHeaders,
+  });
+}
+
+export async function handleUpdateDeveloperAnalyticsSavedViewRoute(
+  request: Request,
+  viewId: string,
+  service: Pick<WorkerAppService, "updateDeveloperAnalyticsSavedView">,
+  responseHeaders: HeadersInit,
+): Promise<Response> {
+  return json(
+    await service.updateDeveloperAnalyticsSavedView(
+      getBearerToken(request),
+      viewId,
+      await readJson<UpsertDeveloperAnalyticsSavedViewRequest>(request),
+    ),
+    {
+      headers: responseHeaders,
+    },
+  );
+}
+
+export async function handleDeleteDeveloperAnalyticsSavedViewRoute(
+  request: Request,
+  viewId: string,
+  service: Pick<WorkerAppService, "deleteDeveloperAnalyticsSavedView">,
+  responseHeaders: HeadersInit,
+): Promise<Response> {
+  await service.deleteDeveloperAnalyticsSavedView(getBearerToken(request), viewId);
+  return new Response(null, { status: 204, headers: responseHeaders });
+}
+
+export async function handleDeveloperStudioAnalyticsRoute(
+  request: Request,
+  studioId: string,
+  service: Pick<WorkerAppService, "getDeveloperStudioAnalytics">,
+  responseHeaders: HeadersInit,
+): Promise<Response> {
+  const url = new URL(request.url);
+  return json(await service.getDeveloperStudioAnalytics(getBearerToken(request), studioId, readDeveloperAnalyticsQuery(url)), {
+    headers: responseHeaders,
+  });
+}
+
+export async function handleDeveloperTitleAnalyticsRoute(
+  request: Request,
+  titleId: string,
+  service: Pick<WorkerAppService, "getDeveloperTitleAnalytics">,
+  responseHeaders: HeadersInit,
+): Promise<Response> {
+  const url = new URL(request.url);
+  return json(await service.getDeveloperTitleAnalytics(getBearerToken(request), titleId, readDeveloperAnalyticsQuery(url)), {
     headers: responseHeaders,
   });
 }
@@ -669,6 +768,23 @@ export default {
         return json(await service.resolveModerationTitleReport(token, moderationTitleReportInvalidateMatch[1]!, false, await readJson(request)), { headers: responseHeaders });
       }
 
+      if (request.method === "GET" && url.pathname === "/developer/analytics/views") {
+        return handleListDeveloperAnalyticsSavedViewsRoute(request, service, responseHeaders);
+      }
+
+      if (request.method === "POST" && url.pathname === "/developer/analytics/views") {
+        return handleCreateDeveloperAnalyticsSavedViewRoute(request, service, responseHeaders);
+      }
+
+      const developerAnalyticsSavedViewMatch = url.pathname.match(/^\/developer\/analytics\/views\/([^/]+)$/);
+      if (developerAnalyticsSavedViewMatch && request.method === "PUT") {
+        return handleUpdateDeveloperAnalyticsSavedViewRoute(request, developerAnalyticsSavedViewMatch[1]!, service, responseHeaders);
+      }
+
+      if (developerAnalyticsSavedViewMatch && request.method === "DELETE") {
+        return handleDeleteDeveloperAnalyticsSavedViewRoute(request, developerAnalyticsSavedViewMatch[1]!, service, responseHeaders);
+      }
+
       if (request.method === "GET" && url.pathname === "/developer/studios") {
         return json(await service.listManagedStudios(token), { headers: responseHeaders });
       }
@@ -689,6 +805,11 @@ export default {
       if (studioIdMatch && request.method === "DELETE") {
         await service.deleteStudio(token, studioIdMatch[1]!);
         return new Response(null, { status: 204, headers: responseHeaders });
+      }
+
+      const studioAnalyticsMatch = url.pathname.match(/^\/developer\/studios\/([^/]+)\/analytics$/);
+      if (studioAnalyticsMatch && request.method === "GET") {
+        return handleDeveloperStudioAnalyticsRoute(request, studioAnalyticsMatch[1]!, service, responseHeaders);
       }
 
       const studioLinksMatch = url.pathname.match(/^\/developer\/studios\/([^/]+)\/links$/);
@@ -782,6 +903,11 @@ export default {
 
       if (developerTitleMatch && request.method === "PUT") {
         return json(await service.updateTitle(token, developerTitleMatch[1]!, await readJson(request)), { headers: responseHeaders });
+      }
+
+      const developerTitleAnalyticsMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/analytics$/);
+      if (developerTitleAnalyticsMatch && request.method === "GET") {
+        return handleDeveloperTitleAnalyticsRoute(request, developerTitleAnalyticsMatch[1]!, service, responseHeaders);
       }
 
       const developerTitleActivateMatch = url.pathname.match(/^\/developer\/titles\/([^/]+)\/activate$/);

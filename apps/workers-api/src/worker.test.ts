@@ -1,13 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import worker, {
   handleAnalyticsEventRoute,
+  handleCreateDeveloperAnalyticsSavedViewRoute,
+  handleDeleteDeveloperAnalyticsSavedViewRoute,
+  handleDeveloperStudioAnalyticsRoute,
+  handleDeveloperTitleAnalyticsRoute,
   handleBeHomeMetricsRoute,
   handleBeHomePresenceEndRoute,
   handleBeHomePresenceRoute,
   handleBeHomeTitleDetailViewRoute,
   handleBeWebsitePresenceRoute,
+  handleListDeveloperAnalyticsSavedViewsRoute,
   handleMarketingSignupRoute,
   handleSupportIssueRoute,
+  handleUpdateDeveloperAnalyticsSavedViewRoute,
 } from "./worker";
 import { WorkerAppService, type Env } from "./service-boundary";
 
@@ -422,6 +428,197 @@ describe("handleAnalyticsEventRoute", () => {
       },
     });
     expect(service.recordAnalyticsEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("developer analytics routes", () => {
+  it("lists saved analytics views filtered by subject scope", async () => {
+    const service = {
+      listDeveloperAnalyticsSavedViews: vi.fn().mockResolvedValue({
+        views: [],
+      }),
+    };
+
+    const response = await handleListDeveloperAnalyticsSavedViewsRoute(
+      new Request("http://example.test/developer/analytics/views?subjectScope=title", {
+        method: "GET",
+        headers: { authorization: "Bearer developer-token" },
+      }),
+      service as never,
+      {},
+    );
+
+    expect(response.status).toBe(200);
+    expect(service.listDeveloperAnalyticsSavedViews).toHaveBeenCalledWith("developer-token", "title");
+  });
+
+  it("creates a saved analytics view from the request body", async () => {
+    const service = {
+      createDeveloperAnalyticsSavedView: vi.fn().mockResolvedValue({
+        view: {
+          id: "view-1",
+        },
+      }),
+    };
+
+    const response = await handleCreateDeveloperAnalyticsSavedViewRoute(
+      new Request("http://example.test/developer/analytics/views", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer developer-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          subjectScope: "title",
+          name: "Launch watch",
+          panels: [
+            {
+              descriptor: "title_detail_viewed",
+              rangePresetId: "last-24-hours",
+              customFrom: null,
+              customTo: null,
+            },
+          ],
+        }),
+      }),
+      service as never,
+      {},
+    );
+
+    expect(response.status).toBe(201);
+    expect(service.createDeveloperAnalyticsSavedView).toHaveBeenCalledWith("developer-token", {
+      subjectScope: "title",
+      name: "Launch watch",
+      panels: [
+        {
+          descriptor: "title_detail_viewed",
+          rangePresetId: "last-24-hours",
+          customFrom: null,
+          customTo: null,
+        },
+      ],
+    });
+  });
+
+  it("updates and deletes saved analytics views by id", async () => {
+    const service = {
+      updateDeveloperAnalyticsSavedView: vi.fn().mockResolvedValue({
+        view: {
+          id: "view-1",
+        },
+      }),
+      deleteDeveloperAnalyticsSavedView: vi.fn().mockResolvedValue(undefined),
+    };
+
+    const updateResponse = await handleUpdateDeveloperAnalyticsSavedViewRoute(
+      new Request("http://example.test/developer/analytics/views/view-1", {
+        method: "PUT",
+        headers: {
+          authorization: "Bearer developer-token",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          subjectScope: "studio",
+          name: "Followers",
+          panels: [
+            {
+              descriptor: "studio_followed",
+              rangePresetId: "today",
+              customFrom: null,
+              customTo: null,
+            },
+          ],
+        }),
+      }),
+      "view-1",
+      service as never,
+      {},
+    );
+
+    expect(updateResponse.status).toBe(200);
+    expect(service.updateDeveloperAnalyticsSavedView).toHaveBeenCalledWith("developer-token", "view-1", {
+      subjectScope: "studio",
+      name: "Followers",
+      panels: [
+        {
+          descriptor: "studio_followed",
+          rangePresetId: "today",
+          customFrom: null,
+          customTo: null,
+        },
+      ],
+    });
+
+    const deleteResponse = await handleDeleteDeveloperAnalyticsSavedViewRoute(
+      new Request("http://example.test/developer/analytics/views/view-1", {
+        method: "DELETE",
+        headers: { authorization: "Bearer developer-token" },
+      }),
+      "view-1",
+      service as never,
+      {},
+    );
+
+    expect(deleteResponse.status).toBe(204);
+    expect(service.deleteDeveloperAnalyticsSavedView).toHaveBeenCalledWith("developer-token", "view-1");
+  });
+
+  it("passes studio analytics query parameters through to the service", async () => {
+    const service = {
+      getDeveloperStudioAnalytics: vi.fn().mockResolvedValue({
+        range: {
+          from: "2026-04-10T00:00:00.000Z",
+          to: "2026-04-14T00:00:00.000Z",
+        },
+        metrics: [],
+      }),
+    };
+
+    const response = await handleDeveloperStudioAnalyticsRoute(
+      new Request("http://example.test/developer/studios/studio-1/analytics?from=2026-04-10T00:00:00Z&to=2026-04-14T00:00:00Z&descriptor=studio_followed", {
+        method: "GET",
+        headers: { authorization: "Bearer developer-token" },
+      }),
+      "studio-1",
+      service as never,
+      {},
+    );
+
+    expect(response.status).toBe(200);
+    expect(service.getDeveloperStudioAnalytics).toHaveBeenCalledWith("developer-token", "studio-1", {
+      from: "2026-04-10T00:00:00Z",
+      to: "2026-04-14T00:00:00Z",
+      descriptors: ["studio_followed"],
+    });
+  });
+
+  it("passes title analytics query parameters through to the service", async () => {
+    const service = {
+      getDeveloperTitleAnalytics: vi.fn().mockResolvedValue({
+        range: {
+          from: "2026-04-10T00:00:00.000Z",
+          to: "2026-04-14T00:00:00.000Z",
+        },
+        metrics: [],
+      }),
+    };
+
+    const response = await handleDeveloperTitleAnalyticsRoute(
+      new Request("http://example.test/developer/titles/title-1/analytics?descriptor=title_detail_viewed&descriptor=title_get_clicked", {
+        method: "GET",
+        headers: { authorization: "Bearer developer-token" },
+      }),
+      "title-1",
+      service as never,
+      {},
+    );
+
+    expect(response.status).toBe(200);
+    expect(service.getDeveloperTitleAnalytics).toHaveBeenCalledWith("developer-token", "title-1", {
+      from: null,
+      to: null,
+      descriptors: ["title_detail_viewed", "title_get_clicked"],
+    });
   });
 });
 
