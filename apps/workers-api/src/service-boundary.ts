@@ -1829,7 +1829,7 @@ export class WorkerAppService {
 
     if (input.event === "title_detail_viewed") {
       await this.recordUniqueBrowserTitleDetailView(input, options);
-      await this.recordDeveloperAnalyticsEvent({
+      await this.tryRecordDeveloperAnalyticsEvent({
         descriptor: "title_detail_viewed",
         titleId: normalizeBeHomeText(typeof input.metadata?.titleId === "string" ? input.metadata.titleId : null, 120),
         actorHash: await this.resolveBrowserAnalyticsActorHash("title-view", input, options),
@@ -1842,7 +1842,7 @@ export class WorkerAppService {
     }
     if (input.event === "title_get_clicked") {
       await this.recordUniqueBrowserTitleGetClick(input, options);
-      await this.recordDeveloperAnalyticsEvent({
+      await this.tryRecordDeveloperAnalyticsEvent({
         descriptor: "title_get_clicked",
         titleId: normalizeBeHomeText(typeof input.metadata?.titleId === "string" ? input.metadata.titleId : null, 120),
         actorHash: await this.resolveBrowserAnalyticsActorHash("title-get", input, options),

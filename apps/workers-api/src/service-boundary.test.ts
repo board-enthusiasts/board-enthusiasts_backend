@@ -1685,6 +1685,43 @@ describe("WorkerAppService.recordAnalyticsEvent", () => {
     });
   });
 
+  it("keeps public analytics intake working when developer analytics recording fails", async () => {
+    seedAnalyticsEventTypes();
+    const service = new WorkerAppService({
+      APP_ENV: "staging",
+      SUPABASE_URL: "https://example.supabase.co",
+      SUPABASE_PUBLISHABLE_KEY: "publishable-key",
+      SUPABASE_SECRET_KEY: "secret-key",
+    });
+
+    vi.spyOn(service as never, "recordDeveloperAnalyticsEvent" as never).mockRejectedValue(new Error("missing analytics tables"));
+
+    await expect(
+      service.recordAnalyticsEvent(
+        {
+          event: "title_detail_viewed",
+          path: "/browse/blue-harbor-games/lantern-drift",
+          authState: "authenticated",
+          studioSlug: "blue-harbor-games",
+          titleSlug: "lantern-drift",
+          surface: "title-detail",
+          visitorId: "visitor-1",
+          metadata: { titleId: "title-1" },
+        },
+        {
+          countryCode: "US",
+          ipAddress: "203.0.113.10",
+        },
+      ),
+    ).resolves.toEqual({
+      accepted: true,
+      analyticsEnabled: false,
+    });
+
+    expect(tables.title_detail_views).toHaveLength(1);
+    expect(tables.analytics_events).toHaveLength(0);
+  });
+
   it("records unique title detail views once per title and IP address", async () => {
     seedAnalyticsEventTypes();
     const service = new WorkerAppService({
