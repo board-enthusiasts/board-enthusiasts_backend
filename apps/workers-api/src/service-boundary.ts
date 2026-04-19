@@ -1768,7 +1768,7 @@ function parseContext(env: Env): WorkerAppContext {
     supportReportSenderEmail: (env.SUPPORT_REPORT_SENDER_EMAIL ?? "").trim() || "noreply@boardenthusiasts.com",
     supportReportSenderName: (env.SUPPORT_REPORT_SENDER_NAME ?? "").trim() || "Board Enthusiasts",
     deploySmokeSecret: normalizeOptionalEnvValue(env.DEPLOY_SMOKE_SECRET),
-    mailpitBaseUrl: mailpitBaseUrl || ((env.APP_ENV?.trim() || "local") === "local" ? "http://127.0.0.1:55424" : null)
+    mailpitBaseUrl: mailpitBaseUrl || ((env.APP_ENV?.trim() || "local") === "local" ? "http://127.0.0.1:54324" : null)
   };
 }
 
@@ -8576,3 +8576,4 @@ export class WorkerAppService {
     }
   }
 }
+

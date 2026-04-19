@@ -2,29 +2,29 @@ project_id = "board-enthusiasts-local"
 
 [api]
 enabled = true
-port = 55421
+port = 54321
 schemas = ["public", "storage"]
 extra_search_path = ["public"]
 max_rows = 1000
 
 [db]
-port = 55481
-shadow_port = 55420
+port = 54322
+shadow_port = 54320
 major_version = 17
 
 [studio]
 enabled = true
-port = 55423
+port = 54323
 api_url = "http://127.0.0.1"
 
 [analytics]
 enabled = true
-port = 55427
-vector_port = 55428
+port = 54327
+vector_port = 54328
 
 [inbucket]
 enabled = true
-port = 55424
+port = 54324
 admin_email = "noreply@boardenthusiasts.com"
 sender_name = "Board Enthusiasts"
 
@@ -121,3 +121,4 @@ secret = "env(SUPABASE_AUTH_DISCORD_CLIENT_SECRET)"
 enabled = false
 client_id = "env(SUPABASE_AUTH_GOOGLE_CLIENT_ID)"
 secret = "env(SUPABASE_AUTH_GOOGLE_CLIENT_SECRET)"
+
